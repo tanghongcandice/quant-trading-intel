@@ -28,6 +28,14 @@
 
 克隆仓库后可先使用 `apps/web/data/sample_items.js` 查看完整前端结构，再按自己的授权信息源初始化本地数据库。
 
+## 设计文档
+
+- 前后端总体架构：`docs/architecture/frontend_backend_architecture.md`
+- API 契约：`docs/architecture/api_contract.md`
+- Codex 自动化任务：`docs/architecture/codex_automation_prompt.md`
+- 每日盘前日报规范：`docs/report-design/premarket_report_design.md`
+- 日报数据契约：`docs/report-design/report_contract.v1.json`
+
 ## 安装 API 依赖
 
 FastAPI 和 uvicorn 是服务依赖。如果本机还没安装，在项目内执行：
@@ -49,7 +57,7 @@ PYTHONPATH=. python3 -m app.jobs.init_db
 ```bash
 cd quant-trading-intel/apps/api
 PYTHONPATH=. python3 -m app.jobs.import_jsonl \
-  --jsonl ../../../outputs/high_quality_sources_20260619/high_quality_items.jsonl \
+  --jsonl /path/to/information_items.jsonl \
   --mode historical_seed
 ```
 

@@ -1,0 +1,86 @@
+{
+  "report_version": "premarket_report.v1",
+  "required_inputs": [
+    "information_item.v1 JSONL",
+    "optional market price snapshot",
+    "optional watchlist"
+  ],
+  "core_sections": [
+    {
+      "name": "header",
+      "fields": [
+        "report_date",
+        "collection_window",
+        "source_count",
+        "item_count"
+      ]
+    },
+    {
+      "name": "market_bias",
+      "fields": [
+        "view",
+        "confidence",
+        "summary",
+        "evidence",
+        "risks"
+      ]
+    },
+    {
+      "name": "fundamental_analysis",
+      "fields": [
+        "theme",
+        "view",
+        "reason",
+        "evidence_originals",
+        "risks"
+      ]
+    },
+    {
+      "name": "source_tables",
+      "table_fields": [
+        "题材",
+        "标的",
+        "观点",
+        "具体标的",
+        "理由",
+        "风险",
+        "相关原句"
+      ]
+    },
+    {
+      "name": "ticker_view_history",
+      "fields": [
+        "ticker",
+        "history",
+        "current_conclusion"
+      ]
+    },
+    {
+      "name": "data_quality",
+      "fields": [
+        "source_status",
+        "missing_or_partial",
+        "warnings"
+      ]
+    }
+  ],
+  "sentiment_values": [
+    "看涨",
+    "看跌",
+    "中性",
+    "观望"
+  ],
+  "price_status_values": [
+    "已涨",
+    "未涨",
+    "已涨但仍看多",
+    "未涨/待兑现",
+    "AI补充标的"
+  ],
+  "price_status_rule": {
+    "已涨": "original text explicitly says up, ATH, tripled, +xx%, lock profit, target reached",
+    "未涨": "original text implies undervalued, buy zone, support, market missed, target pending",
+    "已涨但仍看多": "original text says the asset has already appreciated but the author still keeps it in the long thesis",
+    "AI补充标的": "the source gives a theme or market view but no specific ticker; model adds a representative ETF or ticker"
+  }
+}
