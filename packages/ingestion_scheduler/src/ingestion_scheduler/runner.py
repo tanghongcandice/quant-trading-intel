@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+from typing import Any
+
+from .adapters.base import AdapterContext
+from .registry import ADAPTERS, adapter_for
+from .state import StateStore
+from .utils import (
+    append_jsonl,
+    atomic_write_json,
+    canonical_json,
+    ensure_dir,
+    read_json,
+    resolve_path,
+    run_id_now,
+    sha256_text,
+    utc_now_iso,
+)
+
+
+def load_config(config_path: Path) -> dict[str, Any]:
+    config = read_json(config_path)
+    validate_config(config)
+    return config
+
+
+def validate_config(config: dict[str, Any]) -> None:
+    if config.get("version") != 1:
+        raise ValueError("Config version must be 1.")
+    sources = config.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError("Config must contain a sources list.")
+    seen: set[str] = set()
+    for source in sources:
+        source_id = source.get("id")
+        source_type = source.get("type")
+        if not source_id or not isinstance(source_id, str):
+            raise ValueError("Every source needs a string id.")
+        if source_id in seen:
+            raise ValueError(f"Duplicate source id: {source_id}")
+        seen.add(source_id)
+        if source_type not in ADAPTERS:
+            raise ValueError(f"Unknown source type for {source_id}: {source_type}")
+
+
+def config_base_dir(config: dict[str, Any], config_path: Path) -> Path:
+    defaults = config.get("defaults", {})
+    base_value = config.get("base_dir") or defaults.get("base_dir") or "."
+    return resolve_path(base_value, config_path.parent)
+
+
+def select_sources(
+    config: dict[str, Any],
+    *,
+    only: list[str] | None = None,
+    include_disabled: bool = False,
+) -> list[dict[str, Any]]:
+    only_set = set(only or [])
+    selected = []
+    for source in config.get("sources", []):
+        if only_set and source["id"] not in only_set:
+            continue
+        if not include_disabled and source.get("enabled", True) is False:
+            continue
+        selected.append(source)
+    return selected
+
+
+def run_scheduler(
+    *,
+    config_path: Path,
+    run_id: str | None = None,
+    only: list[str] | None = None,
+    include_disabled: bool = False,
+    include_duplicates: bool = False,
+    dry_run: bool = False,
+    fail_fast: bool = False,
+) -> dict[str, Any]:
+    config = load_config(config_path)
+    defaults = config.get("defaults", {})
+    base_dir = config_base_dir(config, config_path)
+    state_db = resolve_path(defaults.get("state_db", "data/ingestion_state.sqlite"), base_dir)
+    output_dir = resolve_path(defaults.get("output_dir", "runs"), base_dir)
+    timeout_seconds = int(defaults.get("timeout_seconds", 600))
+    max_retries = int(defaults.get("max_retries", 1))
+    retry_backoff_seconds = float(defaults.get("retry_backoff_seconds", 5))
+
+    run_id = run_id or run_id_now()
+    run_dir = ensure_dir(output_dir / run_id)
+    raw_dir = ensure_dir(run_dir / "raw")
+    items_path = run_dir / "items.jsonl"
+    errors_path = run_dir / "errors.jsonl"
+    summary_path = run_dir / "run_summary.json"
+    collected_at = utc_now_iso()
+
+    state = StateStore(state_db)
+    state.start_run(run_id, config_path)
+    sources = select_sources(config, only=only, include_disabled=include_disabled)
+    summary: dict[str, Any] = {
+        "run_id": run_id,
+        "dry_run": dry_run,
+        "started_at": collected_at,
+        "config_path": str(config_path),
+        "state_db": str(state_db),
+        "run_dir": str(run_dir),
+        "items_path": str(items_path),
+        "errors_path": str(errors_path),
+        "source_count": len(sources),
+        "sources": [],
+        "totals": {"items": 0, "new": 0, "duplicates": 0, "failed_sources": 0},
+    }
+
+    try:
+        for source in sources:
+            source_summary = _run_source(
+                source=source,
+                context=AdapterContext(
+                    base_dir=base_dir,
+                    run_id=run_id,
+                    run_dir=run_dir,
+                    raw_dir=raw_dir,
+                    collected_at=collected_at,
+                    dry_run=dry_run,
+                    timeout_seconds=int(source.get("timeout_seconds", timeout_seconds)),
+                ),
+                state=state,
+                max_retries=int(source.get("max_retries", max_retries)),
+                retry_backoff_seconds=float(source.get("retry_backoff_seconds", retry_backoff_seconds)),
+                include_duplicates=include_duplicates,
+                dry_run=dry_run,
+                items_path=items_path,
+                errors_path=errors_path,
+            )
+            summary["sources"].append(source_summary)
+            summary["totals"]["items"] += source_summary.get("item_count", 0)
+            summary["totals"]["new"] += source_summary.get("new_count", 0)
+            summary["totals"]["duplicates"] += source_summary.get("duplicate_count", 0)
+            if source_summary["status"] != "success":
+                summary["totals"]["failed_sources"] += 1
+                if fail_fast:
+                    break
+    finally:
+        status = "success" if summary["totals"]["failed_sources"] == 0 else "partial_failure"
+        summary["finished_at"] = utc_now_iso()
+        summary["status"] = status
+        atomic_write_json(summary_path, summary)
+        state.finish_run(run_id, status, summary)
+        state.close()
+
+    return summary
+
+
+def _run_source(
+    *,
+    source: dict[str, Any],
+    context: AdapterContext,
+    state: StateStore,
+    max_retries: int,
+    retry_backoff_seconds: float,
+    include_duplicates: bool,
+    dry_run: bool,
+    items_path: Path,
+    errors_path: Path,
+) -> dict[str, Any]:
+    source_id = source["id"]
+    source_type = source["type"]
+    source_raw_dir = context.raw_dir / source_id
+    config_hash = sha256_text(canonical_json(source))
+    attempts = max_retries + 1
+    last_error: str | None = None
+
+    for attempt in range(1, attempts + 1):
+        state.start_source(
+            run_id=context.run_id,
+            source_id=source_id,
+            source_type=source_type,
+            attempt=attempt,
+            config_hash=config_hash,
+            raw_dir=source_raw_dir,
+        )
+        try:
+            adapter = adapter_for(source_type)
+            result = adapter.collect(source, context)
+            seen_at = utc_now_iso()
+            new_count = 0
+            duplicate_count = 0
+            emitted_docs: list[dict[str, Any]] = []
+
+            if not dry_run:
+                for item in result.items:
+                    inserted, item_id = state.upsert_item(item, context.run_id, seen_at)
+                    item["id"] = item_id
+                    item.setdefault("ingestion", {})
+                    item["ingestion"].update(
+                        {
+                            "run_id": context.run_id,
+                            "source_id": source_id,
+                            "seen_at": seen_at,
+                            "is_new": inserted,
+                        }
+                    )
+                    if inserted:
+                        new_count += 1
+                    else:
+                        duplicate_count += 1
+                    if inserted or include_duplicates:
+                        emitted_docs.append(item)
+                append_jsonl(items_path, emitted_docs)
+
+            item_count = len(result.items)
+            state.finish_source(
+                run_id=context.run_id,
+                source_id=source_id,
+                attempt=attempt,
+                status="success",
+                item_count=item_count,
+                new_count=new_count,
+                duplicate_count=duplicate_count,
+            )
+            return {
+                "id": source_id,
+                "type": source_type,
+                "status": "success",
+                "attempt": attempt,
+                "item_count": item_count,
+                "new_count": new_count,
+                "duplicate_count": duplicate_count,
+                "emitted_count": len(emitted_docs),
+                "artifacts": result.artifacts,
+                "stats": result.stats,
+                "planned_commands": result.planned_commands,
+            }
+        except Exception as exc:  # noqa: BLE001 - source isolation is intentional.
+            last_error = str(exc)
+            state.finish_source(
+                run_id=context.run_id,
+                source_id=source_id,
+                attempt=attempt,
+                status="failed",
+                item_count=0,
+                new_count=0,
+                duplicate_count=0,
+                error=last_error,
+            )
+            append_jsonl(
+                errors_path,
+                [
+                    {
+                        "run_id": context.run_id,
+                        "source_id": source_id,
+                        "source_type": source_type,
+                        "attempt": attempt,
+                        "error": last_error,
+                        "at": utc_now_iso(),
+                    }
+                ],
+            )
+            if attempt < attempts:
+                time.sleep(retry_backoff_seconds)
+
+    return {
+        "id": source_id,
+        "type": source_type,
+        "status": "failed",
+        "attempt": attempts,
+        "item_count": 0,
+        "new_count": 0,
+        "duplicate_count": 0,
+        "emitted_count": 0,
+        "artifacts": [],
+        "stats": {},
+        "planned_commands": [],
+        "error": last_error,
+    }

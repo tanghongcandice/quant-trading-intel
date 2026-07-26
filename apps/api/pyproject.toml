@@ -1,0 +1,12 @@
+[project]
+name = "quant-trading-intel-api"
+version = "0.1.0"
+description = "Local API and database service for quant trading intelligence."
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27"
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

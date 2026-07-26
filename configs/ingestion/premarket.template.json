@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "base_dir": "../..",
+  "defaults": {
+    "state_db": "data/premarket_state.sqlite",
+    "output_dir": "runs",
+    "timeout_seconds": 900,
+    "max_retries": 1,
+    "retry_backoff_seconds": 10
+  },
+  "sources": [
+    {
+      "id": "x_haochihaochiaaa",
+      "type": "x",
+      "enabled": true,
+      "name": "X 好吃 @haochihaochiaaa",
+      "script": "scripts/xcrawl_project.py",
+      "mode": "user_tweets",
+      "username": "haochihaochiaaa",
+      "limit": 80,
+      "tags": ["premarket", "watchlist", "x", "haochi"]
+    },
+    {
+      "id": "x_aleabitoreddit",
+      "type": "x",
+      "enabled": true,
+      "name": "X Serenity @aleabitoreddit",
+      "script": "scripts/xcrawl_project.py",
+      "mode": "user_tweets",
+      "username": "aleabitoreddit",
+      "limit": 80,
+      "tags": ["premarket", "watchlist", "x", "serenity"]
+    },
+    {
+      "id": "x_edgerunner17888",
+      "type": "x",
+      "enabled": true,
+      "name": "X Edgerunner @edgerunner17888",
+      "script": "scripts/xcrawl_project.py",
+      "mode": "user_tweets",
+      "username": "edgerunner17888",
+      "limit": 80,
+      "tags": ["premarket", "watchlist", "x", "edgerunner"]
+    },
+    {
+      "id": "substack_edgerunner17888",
+      "type": "substack",
+      "enabled": true,
+      "name": "Edgerunner Substack",
+      "url": "https://edgerunner17888.substack.com",
+      "mode": "download",
+      "format": "md",
+      "after": "2026-06-18",
+      "rate": 2,
+      "download_images": true,
+      "tags": ["premarket", "substack", "longform"]
+    },
+    {
+      "id": "discord_tianyi_edgerunner_trades",
+      "type": "discord",
+      "enabled": true,
+      "name": "天益宗 TianYi Sect / 3-传音堂-edgerunner-trades",
+      "mode": "export",
+      "guild_id": "1369047294560698450",
+      "channel_id": "1372032779050684616",
+      "server_name": "天益宗 TianYi Sect",
+      "channel_name": "3-传音堂-edgerunner-trades",
+      "target_authors": [
+        "Edgerunner (Great Balance Sheet)",
+        "Edgerunner (Great Balance Sheet) [天益宗], 服务器标签：天益宗天益宗宗主 Admin"
+      ],
+      "after": "2026-06-18",
+      "include_threads": "Active",
+      "tags": ["premarket", "discord", "edgerunner"]
+    },
+    {
+      "id": "discord_haochi_daqu",
+      "type": "discord",
+      "enabled": true,
+      "name": "好吃好吃啊！'s server / 大区频道-请大家用心维护",
+      "mode": "export",
+      "guild_id": "1409416284621508620",
+      "channel_id": "1461938466840379463",
+      "server_name": "好吃好吃啊！'s server",
+      "channel_name": "大区频道-请大家用心维护",
+      "target_authors": ["好吃好吃啊～～～～～～～～～～～～～"],
+      "after": "2026-06-18",
+      "include_threads": "Active",
+      "tags": ["premarket", "discord", "haochi"]
+    }
+  ]
+}

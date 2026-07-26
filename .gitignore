@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+.env
+.env.*
+!.env.example
+
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+data/x_crawler/
+
+# Collected source material can contain private Discord messages or paid posts.
+apps/web/data/high_quality_items.js
+apps/web/data/*.local.js
+runs/

@@ -1,0 +1,18 @@
+{
+  "report_version": "premarket_report.v1",
+  "required_inputs": [
+    "information_item.v1 JSONL",
+    "optional market price snapshot",
+    "optional watchlist"
+  ],
+  "source_of_truth_time_field": "information_items.created_at",
+  "source_tables_fields": [
+    "题材",
+    "标的",
+    "观点",
+    "具体标的",
+    "理由",
+    "风险",
+    "相关原句"
+  ]
+}
