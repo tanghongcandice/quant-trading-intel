@@ -14,7 +14,7 @@
 - 时间窗口、来源、作者、标的、全文查询。
 - 单条数据 Codex 进阶分析上下文组装。
 - FastAPI 接口：`/health`、`/api/items`、`/api/items/{item_id}`、`/api/context/item/{item_id}`、`/api/runs`。
-- 前端优先读取 FastAPI；后端不可用时自动 fallback 到不含真实采集内容的静态示例数据。
+- 前端读取 FastAPI；后端不可用时明确显示“API 离线”，不会静默切换到旧数据。
 - 盘前采集入口支持 dry-run，不会触发真实外网采集。
 
 ## 公开仓库的数据边界
@@ -32,7 +32,7 @@
 
 - 前后端总体架构：`docs/architecture/frontend_backend_architecture.md`
 - API 契约：`docs/architecture/api_contract.md`
-- Codex 自动化任务：`docs/architecture/codex_automation_prompt.md`
+- Codex 自动化任务：`automations/premarket_collection_prompt.md`
 - 每日盘前日报规范：`docs/report-design/premarket_report_design.md`
 - 日报数据契约：`docs/report-design/report_contract.v1.json`
 
@@ -85,7 +85,11 @@ cd quant-trading-intel/apps/api
 PYTHONPATH=. python3 -m app.jobs.collect_premarket --dry-run
 ```
 
-真实采集需要网络权限和对应采集 skill 的登录状态，确认后再去掉 `--dry-run`。
+真实采集需要网络权限和已授权的浏览器登录状态，确认后再去掉 `--dry-run`。统一入口为：
+
+```bash
+./scripts/run_daily_collection.sh
+```
 
 ## 启动 API
 

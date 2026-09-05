@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hong-dashboard.auth-gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/.venv/bin/python</string>
+    <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/deploy/auth_gateway.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mac/.config/hong-dashboard/auth-gateway.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/.config/hong-dashboard/auth-gateway.error.log</string>
+</dict>
+</plist>

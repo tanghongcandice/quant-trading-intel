@@ -19,10 +19,51 @@ class DiscordAdapter(SourceAdapter):
     source_type = "discord"
     adapter_version = "0.1.0"
 
+    def normalize_docs(
+        self,
+        source: dict[str, Any],
+        context: AdapterContext,
+        docs: list[dict[str, Any]],
+        artifact: str | None = None,
+    ) -> AdapterResult:
+        """Normalize an already captured browser snapshot.
+
+        This is deliberately the same path as ``collect`` after loading the
+        snapshot, so author filtering and reply-context handling cannot drift
+        between scheduled runs and the repair/backfill command.
+        """
+        return self._result_from_docs(
+            source,
+            context,
+            docs,
+            [artifact] if artifact else [],
+            [],
+        )
+
     def collect(self, source: dict[str, Any], context: AdapterContext) -> AdapterResult:
         source_id = source["id"]
         raw_dir = ensure_dir(context.raw_dir / source_id)
-        fixture_file = source.get("fixture_file")
+        fixture_file = source.get("fixture_file") or source.get("browser_snapshot")
+
+        if context.dry_run:
+            return AdapterResult(
+                source_id=source_id,
+                source_type=self.source_type,
+                stats={"mode": source.get("mode", "export"), "dry_run": True},
+            )
+
+        # Authenticated browser captures are intentionally treated as an
+        # input snapshot.  The browser extractor reads only rendered DOM from
+        # the user's logged-in session; no Discord token/cookie is imported
+        # into the scheduler process.
+        if source.get("mode") == "browser_session":
+            if not fixture_file:
+                return AdapterResult(source_id, self.source_type, stats={"mode": "browser_session", "skipped": True, "reason": "browser_snapshot_not_configured"})
+            fixture_path = self._resolve_path(fixture_file, context.base_dir)
+            if not fixture_path.exists():
+                return AdapterResult(source_id, self.source_type, stats={"mode": "browser_session", "skipped": True, "reason": "browser_snapshot_missing", "snapshot": str(fixture_path)})
+            docs = self._load_export(fixture_path)
+            return self._result_from_docs(source, context, docs, [str(fixture_path)], [])
 
         if fixture_file:
             fixture_path = self._resolve_path(fixture_file, context.base_dir)
@@ -30,20 +71,6 @@ class DiscordAdapter(SourceAdapter):
             return self._result_from_docs(source, context, docs, [str(fixture_path)], [])
 
         command, output_path = self._build_command(source, context.base_dir, raw_dir)
-        if context.dry_run:
-            return AdapterResult(
-                source_id=source_id,
-                source_type=self.source_type,
-                stats={
-                    "mode": source.get("mode", "export"),
-                    "dry_run": True,
-                    "requires_env": "DISCORD_TOKEN",
-                    "channel_id": source.get("channel_id"),
-                    "target_author_count": len(source.get("target_authors") or []),
-                },
-                planned_commands=[command_for_log(command)],
-            )
-
         if not os.environ.get("DISCORD_TOKEN"):
             raise RuntimeError(
                 f"discord source {source_id} needs DISCORD_TOKEN with access to channel {source.get('channel_id')}"
@@ -106,7 +133,17 @@ class DiscordAdapter(SourceAdapter):
             return payload
         if not isinstance(payload, dict):
             return []
-        messages = payload.get("messages") or payload.get("Messages") or []
+        # Browser captures use ``items`` (the same envelope as X captures),
+        # while the legacy exporter uses ``messages``.  Accept both; treating
+        # an items snapshot as empty was the reason Discord runs reported
+        # success while inserting zero records.
+        messages = (
+            payload.get("messages")
+            or payload.get("Messages")
+            or payload.get("items")
+            or payload.get("Items")
+            or []
+        )
         if not isinstance(messages, list):
             return []
         return messages
@@ -131,6 +168,8 @@ class DiscordAdapter(SourceAdapter):
                 "raw_count": len(docs),
                 "filtered_count": len(filtered),
                 "normalized_count": len(items),
+                "snapshot_latest": max((str((doc or {}).get("timestamp") or "") for doc in docs), default=None),
+                "collected_at": context.collected_at,
             },
             planned_commands=planned_commands,
         )
@@ -142,22 +181,58 @@ class DiscordAdapter(SourceAdapter):
             return docs
 
         filtered = []
-        for doc in docs:
+        matched_ids: set[str] = set()
+        by_id = {str((doc or {}).get("id") or (doc or {}).get("Id") or ""): doc for doc in docs}
+
+        def is_target(doc: dict[str, Any]) -> bool:
             author = doc.get("author") or doc.get("Author") or {}
             author_id = str(author.get("id") or author.get("Id") or "")
-            names = [
-                author.get("name"),
-                author.get("username"),
-                author.get("nickname"),
-                author.get("displayName"),
-                author.get("globalName"),
-                doc.get("author"),
+            names = [author.get("name"), author.get("username"), author.get("nickname"),
+                     author.get("displayName"), author.get("globalName"), doc.get("author")]
+            normalized_names = [
+                self._normalize_author_name(name)
+                for name in names
+                if isinstance(name, str) and name.strip()
             ]
-            normalized_names = [self._normalize_author_name(name) for name in names if name]
-            if author_id and author_id in target_ids:
+            name_match = any(
+                any(target in name or name in target for target in targets)
+                for name in normalized_names
+            )
+            # Stable Discord user IDs are authoritative when supplied. Names
+            # are the fallback for captures where the DOM does not expose an
+            # ID (or a channel intentionally uses display-name matching).
+            return bool(author_id and author_id in target_ids) or any(
+                target == name for target in targets for name in normalized_names
+            )
+
+        for doc in docs:
+            if is_target(doc):
                 filtered.append(doc)
-            elif any(any(target in name or name in target for target in targets) for name in normalized_names):
-                filtered.append(doc)
+                matched_ids.add(str(doc.get("id") or doc.get("Id") or ""))
+
+        # A target author's reply is useful only with the message being
+        # replied to. Include that parent even when its author is not a target.
+        parents = []
+        for doc in list(filtered):
+            ref = doc.get("reference") or doc.get("Reference") or {}
+            ref_id = ref.get("messageId") or ref.get("message_id") or ref.get("id")
+            if ref_id and str(ref_id) in by_id:
+                parents.append(by_id[str(ref_id)])
+            elif doc.get("referencedMessage"):
+                embedded = dict(doc["referencedMessage"])
+                embedded.setdefault("id", ref_id)
+                embedded.setdefault("timestamp", doc.get("timestamp"))
+                if embedded.get("id"):
+                    parents.append(embedded)
+        for parent in parents:
+            # Keep the parent as a separate raw item for traceability, while
+            # marking it context-only so API feed queries can suppress it.
+            parent = dict(parent)
+            parent["_context_only"] = True
+            parent_id = str(parent.get("id") or parent.get("Id") or "")
+            if parent_id and parent_id not in matched_ids:
+                filtered.insert(0, parent)
+                matched_ids.add(parent_id)
         return filtered
 
     def _normalize_message(self, source: dict[str, Any], context: AdapterContext, data: dict[str, Any]) -> dict[str, Any]:
@@ -181,6 +256,25 @@ class DiscordAdapter(SourceAdapter):
             or data.get("timestampUtcFromSnowflake")
             or data.get("createdAt")
         )
+        ref = data.get("reference") or data.get("Reference") or {}
+        referenced = data.get("referencedMessage") or data.get("referenced_message") or {}
+        parent_id = ref.get("messageId") or ref.get("message_id") or ref.get("id") or referenced.get("id")
+        parent_author = referenced.get("author") or {}
+        if isinstance(parent_author, str):
+            parent_author = {"display_name": parent_author}
+        reply_context = None
+        if parent_id or referenced or ref:
+            reply_context = {
+                "id": str(parent_id or ""),
+                "url": (f"https://discord.com/channels/{guild_id}/{channel_id}/{parent_id}" if parent_id else ""),
+                "author": {
+                    "display_name": parent_author.get("displayName") or parent_author.get("display_name") or parent_author.get("name") or "原消息作者",
+                    "handle": parent_author.get("username") or parent_author.get("name"),
+                },
+                "content": referenced.get("content") or "",
+                "timestamp": referenced.get("timestamp") or "",
+                "available": not bool(ref.get("unavailable")),
+            }
 
         return build_information_item(
             source_type=self.source_type,
@@ -208,6 +302,8 @@ class DiscordAdapter(SourceAdapter):
             },
             created_at=timestamp,
             collected_at=context.collected_at,
+            parent_external_id=str(parent_id) if parent_id else None,
+            is_reply=bool(parent_id or referenced or ref),
             metrics={
                 "reply_count": self._count_collection(data.get("replies") or data.get("Replies")),
                 "reaction_count": self._count_reactions(data.get("reactions") or data.get("Reactions")),
@@ -221,6 +317,15 @@ class DiscordAdapter(SourceAdapter):
                 "server_name": server_name,
                 "channel_name": channel_name,
                 "target_authors": source.get("target_authors") or [],
+                "reply_context": reply_context,
+                **(
+                    {
+                        "analysis_role": "reply_context_only",
+                        "analysis_policy": {"include": False, "mode": "context_only"},
+                    }
+                    if data.get("_context_only")
+                    else {}
+                ),
             },
         )
 

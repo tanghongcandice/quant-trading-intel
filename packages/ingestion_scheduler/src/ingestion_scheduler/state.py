@@ -66,7 +66,41 @@ class StateStore:
             CREATE INDEX IF NOT EXISTS idx_items_source ON items(source_type, source_id);
             CREATE INDEX IF NOT EXISTS idx_items_created ON items(created_at);
             CREATE INDEX IF NOT EXISTS idx_source_runs_run ON source_runs(run_id);
+
+            -- Independent ingestion watermark.  Browser snapshots are
+            -- immutable audit artifacts and must never be used as the
+            -- incremental cutoff.
+            CREATE TABLE IF NOT EXISTS source_cursors (
+                source_id TEXT PRIMARY KEY,
+                last_successful_created_at TEXT,
+                last_successful_external_id TEXT,
+                updated_at TEXT NOT NULL,
+                run_id TEXT NOT NULL
+            );
             """
+        )
+        self.conn.commit()
+
+    def get_cursor(self, source_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM source_cursors WHERE source_id = ?", (source_id,)).fetchone()
+        return dict(row) if row else None
+
+    def advance_cursor(self, source_id: str, created_at: str | None, external_id: str | None, run_id: str) -> None:
+        if not created_at:
+            return
+        current = self.get_cursor(source_id)
+        # Watermarks are monotonic; an old/partial snapshot can never move
+        # the cursor backwards.
+        if current and (current.get("last_successful_created_at") or "") >= created_at:
+            return
+        self.conn.execute(
+            """INSERT INTO source_cursors(source_id,last_successful_created_at,last_successful_external_id,updated_at,run_id)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(source_id) DO UPDATE SET
+                 last_successful_created_at=excluded.last_successful_created_at,
+                 last_successful_external_id=excluded.last_successful_external_id,
+                 updated_at=excluded.updated_at, run_id=excluded.run_id""",
+            (source_id, created_at, external_id, utc_now_iso(), run_id),
         )
         self.conn.commit()
 

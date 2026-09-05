@@ -16,8 +16,14 @@ htmlcov/
 *.db
 *.db-*
 data/x_crawler/
+data/
+logs/
+browser_sessions/
+runs/
+
+# Local deployment state. The reusable gateway and launchd definitions remain tracked.
+deploy/cloudflared/config.yml
 
 # Collected source material can contain private Discord messages or paid posts.
 apps/web/data/high_quality_items.js
 apps/web/data/*.local.js
-runs/

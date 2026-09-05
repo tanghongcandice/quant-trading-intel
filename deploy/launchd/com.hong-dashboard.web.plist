@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hong-dashboard.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/.venv/bin/python</string>
+    <string>-m</string>
+    <string>http.server</string>
+    <string>8001</string>
+    <string>--bind</string>
+    <string>127.0.0.1</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/apps/web</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/logs/web-service.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/logs/web-service.error.log</string>
+</dict>
+</plist>

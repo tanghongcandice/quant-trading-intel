@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -8,9 +9,10 @@ from typing import Any
 from .base import AdapterContext, AdapterResult, SourceAdapter
 from ..models import build_information_item
 from ..utils import command_for_log, ensure_dir, read_jsonl, resolve_path, run_subprocess, safe_slug, write_text
+from ..media import download_static_images, x_image_candidates
 
 
-DEFAULT_X_SCRIPT = "/Users/bytedance/.codex/skills/x-crawler/scripts/xcrawl.py"
+DEFAULT_X_SCRIPT = ""
 
 
 class XAdapter(SourceAdapter):
@@ -20,22 +22,25 @@ class XAdapter(SourceAdapter):
     def collect(self, source: dict[str, Any], context: AdapterContext) -> AdapterResult:
         source_id = source["id"]
         raw_dir = ensure_dir(context.raw_dir / source_id)
-        fixture_file = source.get("fixture_file")
+        fixture_file = source.get("fixture_file") or source.get("browser_snapshot")
 
-        if fixture_file:
-            fixture_path = resolve_path(fixture_file, context.base_dir)
-            docs = read_jsonl(fixture_path)
-            return self._result_from_docs(source, context, docs, [str(fixture_path)], [])
-
-        command, output_path = self._build_command(source, context.base_dir, raw_dir)
         if context.dry_run:
             return AdapterResult(
                 source_id=source_id,
                 source_type=self.source_type,
                 stats={"mode": source.get("mode", "search"), "dry_run": True},
-                planned_commands=[command_for_log(command)],
             )
 
+        if fixture_file:
+            fixture_path = resolve_path(fixture_file, context.base_dir)
+            if source.get("mode") == "browser_session":
+                payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+                docs = payload if isinstance(payload, list) else payload.get("items", [])
+            else:
+                docs = read_jsonl(fixture_path)
+            return self._result_from_docs(source, context, docs, [str(fixture_path)], [])
+
+        command, output_path = self._build_command(source, context.base_dir, raw_dir)
         result = run_subprocess(command, timeout_seconds=context.timeout_seconds)
         write_text(raw_dir / "stdout.log", result.stdout)
         write_text(raw_dir / "stderr.log", result.stderr)
@@ -54,6 +59,8 @@ class XAdapter(SourceAdapter):
         )
 
     def _build_command(self, source: dict[str, Any], base_dir: Path, raw_dir: Path) -> tuple[list[str], Path]:
+        if not source.get("script"):
+            raise RuntimeError("X command-line crawler has been removed; provide a browser_session snapshot")
         script = self._script_path(source.get("script") or DEFAULT_X_SCRIPT, base_dir)
         mode = source.get("mode", "search")
         limit = int(source.get("limit", 20))
@@ -115,7 +122,9 @@ class XAdapter(SourceAdapter):
             source_type=self.source_type,
             items=items,
             artifacts=artifacts,
-            stats={"mode": source.get("mode", "search"), "raw_count": len(docs), "normalized_count": len(items)},
+            stats={"mode": source.get("mode", "search"), "raw_count": len(docs), "normalized_count": len(items),
+                   "snapshot_latest": max((str((doc or {}).get("date") or (doc or {}).get("created_at") or "") for doc in docs), default=None),
+                   "collected_at": context.collected_at},
             planned_commands=planned_commands,
         )
 
@@ -151,9 +160,22 @@ class XAdapter(SourceAdapter):
         parent_id = data.get("inReplyToTweetIdStr") or data.get("inReplyToTweetId")
         thread_id = data.get("conversationIdStr") or data.get("conversationId") or parent_id
         is_profile_like = not tweet_id and bool(username or description)
-        text = data.get("rawContent") or data.get("content") or data.get("text") or description
+        text = self._clean_tweet_text(data.get("rawContent") or data.get("content") or data.get("text") or description, username)
         links = data.get("links") or []
         media = data.get("media") or {}
+
+        static_images: list[dict[str, Any]] = []
+        if tweet_id:
+            static_images = download_static_images(
+                x_image_candidates(media),
+                media_root=context.base_dir / "data" / "media",
+                source_id=source["id"],
+                external_id=str(tweet_id),
+                timeout_seconds=min(context.timeout_seconds, 60),
+            )
+        if static_images:
+            media = dict(media) if isinstance(media, dict) else {}
+            media["static_images"] = static_images
 
         return build_information_item(
             source_type=self.source_type,
@@ -204,3 +226,32 @@ class XAdapter(SourceAdapter):
                 "source_config_id": source["id"],
             },
         )
+
+    @staticmethod
+    def _clean_tweet_text(value: Any, username: Any = None) -> str:
+        """Keep tweet body while removing X chrome accidentally captured by snapshots."""
+        if value is None:
+            return ""
+        text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return ""
+        lines = [line.strip() for line in text.split("\n")]
+        handle = str(username or "").lstrip("@").lower()
+        # Browser accessibility snapshots commonly prepend author/handle/time.
+        while lines and (not lines[0] or lines[0] in {"·", "•"}):
+            lines.pop(0)
+        # Display name is immediately followed by the handle in accessibility text.
+        if len(lines) >= 2 and lines[1].startswith("@") and (not handle or lines[1][1:].lower() == handle):
+            lines.pop(0)
+        if lines and handle and lines[0].lstrip("@").lower() == handle:
+            lines.pop(0)
+        if lines and lines[0].startswith("@") and (not handle or lines[0][1:].lower() == handle):
+            lines.pop(0)
+        if lines and lines[0] in {"·", "•"}:
+            lines.pop(0)
+        if lines and re.fullmatch(r"(?:·|•)?\s*(?:\d+\s*(?:秒|分|小时|天|周|月|年)|just now|\d+[smhd])", lines[0], re.I):
+            lines.pop(0)
+        # Remove trailing engagement counters (reply/repost/like/view/bookmark).
+        while lines and re.fullmatch(r"[\d,.]+[万亿kKmMbB]?", lines[-1]):
+            lines.pop()
+        return "\n".join(lines).strip()

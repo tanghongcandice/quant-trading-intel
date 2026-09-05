@@ -79,6 +79,15 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
     entity_count = 0
 
     with connect(db_path) as conn:
+        # Watermark is separate from raw browser snapshots and advances only
+        # after a successful import transaction.
+        conn.execute("""CREATE TABLE IF NOT EXISTS source_cursors (
+            source_id TEXT PRIMARY KEY,
+            last_successful_created_at TEXT,
+            last_successful_external_id TEXT,
+            updated_at TEXT NOT NULL,
+            run_id TEXT NOT NULL
+        )""")
         conn.execute(
             """
             INSERT OR REPLACE INTO ingestion_runs
@@ -96,7 +105,6 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
                 "{}",
             ),
         )
-
         for item in items:
             before = conn.total_changes
             conn.execute(
@@ -145,7 +153,61 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
                 ),
             )
 
+        # A referenced Discord parent is retained for reply context, but must
+        # not appear as a standalone feed item. Mark it after importing all
+        # items so this works whether the parent is new or already stored.
+        for item in items:
+            relations = item.get("relations") or {}
+            parent_external_id = relations.get("parent_external_id")
+            source = item.get("source") or {}
+            if not parent_external_id or source.get("type") != "discord":
+                continue
+            parent = conn.execute(
+                "SELECT id, raw_json FROM information_items WHERE source_id = ? AND external_id = ?",
+                (source.get("id"), str(parent_external_id)),
+            ).fetchone()
+            if not parent:
+                continue
+            try:
+                parent_item = json.loads(parent["raw_json"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            payload = parent_item.setdefault("raw_payload", {})
+            if payload.get("analysis_role") == "reply_context_only":
+                continue
+            payload["analysis_role"] = "reply_context_only"
+            payload["analysis_policy"] = {"include": False, "mode": "context_only"}
+            conn.execute(
+                "UPDATE information_items SET raw_json = ? WHERE id = ?",
+                (json.dumps(parent_item, ensure_ascii=False, sort_keys=True), parent["id"]),
+            )
+
+        # Advance watermarks only after every item and relation update has
+        # succeeded in this transaction.
         finished_at = utc_now_iso()
+        by_source: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            sid = (item.get("source") or {}).get("id")
+            if sid:
+                by_source.setdefault(str(sid), []).append(item)
+        for sid, source_items in by_source.items():
+            dated = [i for i in source_items if (i.get("timestamps") or {}).get("created_at")]
+            if not dated:
+                continue
+            latest = max(dated, key=lambda i: str((i.get("timestamps") or {}).get("created_at")))
+            created = str((latest.get("timestamps") or {}).get("created_at"))
+            current = conn.execute("SELECT last_successful_created_at FROM source_cursors WHERE source_id = ?", (sid,)).fetchone()
+            if current and (current[0] or "") >= created:
+                continue
+            conn.execute(
+                """INSERT INTO source_cursors(source_id,last_successful_created_at,last_successful_external_id,updated_at,run_id)
+                   VALUES(?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET
+                   last_successful_created_at=excluded.last_successful_created_at,
+                   last_successful_external_id=excluded.last_successful_external_id,
+                   updated_at=excluded.updated_at, run_id=excluded.run_id""",
+                (sid, created, (latest.get("external") or {}).get("id"), finished_at, actual_run_id),
+            )
+
         summary = {
             "jsonl_path": str(jsonl_path),
             "db_path": str(db_path),

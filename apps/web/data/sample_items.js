@@ -6,7 +6,7 @@ window.__HIGH_QUALITY_ITEMS__ = [
       "id": "sample_x_watchlist",
       "type": "x",
       "name": "X 示例观察列表",
-      "collector": "x-crawler",
+      "collector": "x-browser-session",
       "tags": ["sample", "premarket"]
     },
     "external": {"id": "sample-001", "url": ""},
@@ -102,7 +102,7 @@ window.__HIGH_QUALITY_ITEMS__ = [
       "id": "sample_x_options",
       "type": "x",
       "name": "X 示例期权观察",
-      "collector": "x-crawler",
+      "collector": "x-browser-session",
       "tags": ["sample", "premarket", "options"]
     },
     "external": {"id": "sample-004", "url": ""},

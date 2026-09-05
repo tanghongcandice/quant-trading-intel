@@ -70,6 +70,11 @@ def query_items(
         where.append("information_items_fts MATCH ?")
         params.append(q)
 
+    # Reply parents are stored for context, but are not standalone feed items.
+    # Keep this server-side so the existing frontend needs no changes.
+    # Some legacy rows contain non-JSON raw payloads; guard json_extract so a
+    # single malformed historical record cannot turn the whole API into 500.
+    where.append("CASE WHEN json_valid(i.raw_json) THEN COALESCE(json_extract(i.raw_json, '$.raw_payload.analysis_role'), '') ELSE '' END <> 'reply_context_only'")
     where_sql = "WHERE " + " AND ".join(where) if where else ""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)

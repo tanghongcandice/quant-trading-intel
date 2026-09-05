@@ -3,279 +3,104 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>量化交易信息库</title>
-  <link rel="stylesheet" href="./src/styles.css">
+  <title>Hong dashboard</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./src/styles.css?v=20260903-image-lightbox-6">
 </head>
 <body>
   <div id="app">
     <header class="app-header">
-      <div>
-        <p class="eyebrow">Quant Trading Intel</p>
-        <h1>盘前信息库工作台</h1>
+      <div class="brand-lockup">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <div><p class="eyebrow">MARKET INTELLIGENCE</p><h1>Hong dashboard</h1></div>
       </div>
-      <div class="header-actions">
-        <span class="status-pill" id="dataStatus">本地数据</span>
-        <a class="ghost-link" href="../../outputs/premarket_report_design/premarket_report_2026-06-19.html">日报 HTML</a>
-      </div>
+      <div class="header-actions"><span class="status-dot" aria-hidden="true"></span><span class="status-pill" id="dataStatus">正在连接数据</span></div>
     </header>
 
-    <nav class="nav-band" aria-label="页面导航">
-      <div class="nav-inner">
-        <a href="#overview">总览</a>
-        <a href="#daily-trend">每日趋势</a>
-        <a href="#fundamental">基本面分析</a>
-        <a href="#source-insights">信息源观点</a>
-        <a href="#items">信息流</a>
-        <a href="#ticker-summary-section">按标的聚合</a>
-        <a href="#ticker-history">历史观点</a>
-        <a href="#quality">数据质量</a>
+    <div id="apiOfflineBanner" class="api-offline-banner" role="alert" hidden>
+      <strong>API 离线</strong>
+      <span>无法连接 8000 端口，当前不展示静态示例数据。服务恢复后刷新页面即可重新载入。</span>
+    </div>
+
+    <nav class="view-nav" aria-label="工作模式">
+      <div class="view-tabs" role="tablist" aria-label="选择工作模式">
+        <button class="view-tab active" type="button" role="tab" aria-selected="true" data-view="feed"><span class="view-tab-icon">↧</span><span>信息流模式</span><small>纵向审阅</small></button>
+        <button class="view-tab" type="button" role="tab" aria-selected="false" data-view="history"><span class="view-tab-icon">↔</span><span>标的历史观点</span><small>横向串联</small></button>
       </div>
     </nav>
 
     <main class="app-main">
-      <section class="toolbar" aria-label="筛选条件">
-        <div class="toolbar-row">
-          <div class="field field-wide">
-            <label>时间窗口</label>
-            <div class="segmented" role="group" aria-label="时间快捷筛选">
-              <button class="segmented-btn" data-preset="all">全部</button>
-              <button class="segmented-btn" data-preset="today">今天</button>
-              <button class="segmented-btn" data-preset="24h">近 24 小时</button>
-              <button class="segmented-btn active" data-preset="3d">近 3 天</button>
-              <button class="segmented-btn" data-preset="7d">近 7 天</button>
-            </div>
-          </div>
-          <div class="field">
-            <label for="startAt">开始时间</label>
-            <input id="startAt" type="datetime-local">
-          </div>
-          <div class="field">
-            <label for="endAt">结束时间</label>
-            <input id="endAt" type="datetime-local">
-          </div>
-          <div class="field field-small">
-            <label for="timezone">时区</label>
-            <select id="timezone">
-              <option value="Asia/Shanghai">Asia/Shanghai</option>
-              <option value="America/New_York">America/New_York</option>
-              <option value="UTC">UTC</option>
-            </select>
-          </div>
+      <section class="market-console" aria-label="市场切换">
+        <div class="market-switch" role="tablist" aria-label="选择市场">
+          <button class="market-tab active" type="button" role="tab" aria-selected="true" data-market="us"><span>美股</span><small id="usMarketCount">0 条</small></button>
+          <button class="market-tab" type="button" role="tab" aria-selected="false" data-market="cn"><span>A股</span><small id="cnMarketCount">0 条</small></button>
         </div>
-
-        <div class="toolbar-row filter-row">
-          <div class="field">
-            <label for="sourceFilter">来源</label>
-            <select id="sourceFilter"></select>
-          </div>
-          <div class="field">
-            <label for="authorFilter">作者</label>
-            <select id="authorFilter"></select>
-          </div>
-          <div class="field">
-            <label for="tickerFilter">标的</label>
-            <select id="tickerFilter"></select>
-          </div>
-          <div class="field">
-            <label for="themeFilter">题材</label>
-            <select id="themeFilter"></select>
-          </div>
-          <div class="field field-small">
-            <label for="sentimentFilter">观点</label>
-            <select id="sentimentFilter">
-              <option value="">全部</option>
-              <option value="看涨">看涨</option>
-              <option value="看跌">看跌</option>
-              <option value="中性">中性</option>
-              <option value="观望">观望</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="toolbar-row search-row">
-          <div class="field field-search">
-            <label for="queryInput">全文搜索</label>
-            <input id="queryInput" type="search" placeholder="搜索原文、作者、标的、题材">
-          </div>
+        <div class="market-context">
+          <div class="market-copy"><p class="market-kicker" id="marketKicker">US MARKET</p><h2 id="marketTitle">美股情报</h2><p id="marketDescription">先读原文，再看观点；信息只保留必要层级。</p></div>
+          <div id="marketSourceRoster" class="market-source-roster" aria-label="当前市场信息源"></div>
         </div>
       </section>
 
-      <section id="overview" class="section-band" aria-label="盘前总览">
-        <div class="section-head">
-          <h2>盘前总览</h2>
-          <p id="statWindow" class="section-note">-</p>
-        </div>
-        <div class="summary-grid">
-          <article class="summary-card primary">
-            <p class="summary-label">大盘方向</p>
-            <p class="summary-value" id="marketBias">-</p>
-            <p class="summary-text" id="marketBiasText">-</p>
-          </article>
-          <article class="summary-card">
-            <p class="summary-label">核心题材</p>
-            <p class="summary-value" id="coreTheme">-</p>
-            <p class="summary-text" id="coreThemeText">-</p>
-          </article>
-          <article class="summary-card">
-            <p class="summary-label">主要风险</p>
-            <p class="summary-value" id="riskBadge">-</p>
-            <p class="summary-text" id="riskSummary">-</p>
-          </article>
-          <article class="summary-card">
-            <p class="summary-label">数据状态</p>
-            <p class="summary-value"><span id="statCount">0</span> 条</p>
-            <p class="summary-text"><span id="statSources">0</span> 个来源；高频标的 <span id="statTickers">0</span> 个。<span id="statSourceText">-</span></p>
-          </article>
-        </div>
-      </section>
-
-      <section class="stats-grid compact-stats" aria-label="筛选结果统计">
-        <article class="stat-panel">
-          <span class="stat-label">筛选窗口</span>
-          <strong id="statWindowShort">-</strong>
-          <span>按信息发布时间计算</span>
-        </article>
-        <article class="stat-panel">
-          <span class="stat-label">来源</span>
-          <strong id="statSourcesShort">0</strong>
-          <span id="statSourceTextShort">-</span>
-        </article>
-        <article class="stat-panel">
-          <span class="stat-label">高频标的</span>
-          <strong id="statTickersShort">0</strong>
-          <span id="statTickerText">-</span>
-        </article>
-        <article class="stat-panel accent">
-          <span class="stat-label">进阶分析</span>
-          <strong id="statSelected">未选择</strong>
-          <span>点击表格行右侧“分析”</span>
-        </article>
-      </section>
-
-      <section id="daily-trend" class="panel trend-panel" aria-label="每日趋势">
-        <div class="panel-head">
-          <div>
-            <h2>每日趋势</h2>
-            <p id="trendHint">按当前时间范围和筛选条件生成，每天一张卡片，包含题材、证据、原句和风险。</p>
+      <div id="feedView" class="view-panel active" data-view-panel="feed" role="tabpanel">
+        <section class="toolbar section-band" aria-label="筛选条件">
+          <div class="section-head filter-section-head">
+            <div><p class="section-index">01 · FILTER</p><h2>筛选信息</h2><p class="section-note">筛选条件会同步作用于原文、信息源观点与历史观点。</p></div>
+            <button id="resetFilters" class="text-btn" type="button">重置筛选</button>
           </div>
-          <div class="trend-nav" aria-label="趋势卡片切换">
-            <button id="trendPrev" class="icon-btn" aria-label="上一张趋势卡片">‹</button>
-            <button id="trendNext" class="icon-btn" aria-label="下一张趋势卡片">›</button>
-          </div>
-        </div>
-        <div id="trendCards" class="trend-cards" tabindex="0"></div>
-      </section>
+          <div class="filter-grid">
+            <div class="field source-field"><label>来源（多选）</label><button id="sourceFilterTrigger" class="multi-select-trigger" type="button" aria-expanded="false"><span id="sourceFilterLabel">全部来源</span><span>⌄</span></button><div id="sourceFilterMenu" class="multi-select-menu" hidden></div></div>
+            <div class="field author-field"><label>作者（多选）</label><button id="authorFilterTrigger" class="multi-select-trigger" type="button" aria-expanded="false"><span id="authorFilterLabel">全部作者</span><span>⌄</span></button><div id="authorFilterMenu" class="multi-select-menu" hidden></div></div>
+            <div class="field date-filter-field"><label for="reviewStartDate">开始日期</label><input id="reviewStartDate" type="date"></div>
+            <div class="field date-filter-field"><label for="reviewEndDate">结束日期</label><input id="reviewEndDate" type="date"></div>
+            <div class="field date-clear-field"><label aria-hidden="true">日期范围</label><button id="clearReviewRange" class="text-btn filter-clear-date" type="button">查看全部日期</button></div>
+            <div class="field" id="tickerField"><label for="tickerFilter">标的</label><select id="tickerFilter"></select></div>
+            <div class="field sector-field"><label for="sectorFilter">板块</label><select id="sectorFilter"></select></div>
 
-      <section id="fundamental" class="section-band" aria-label="基本面分析">
-        <div class="section-head">
-          <h2>基本面分析</h2>
-          <p class="section-note">趋势判断、证据、原文与风险</p>
-        </div>
-        <div class="table-wrap report-table-wrap">
-          <table class="report-table">
-            <thead>
-              <tr>
-                <th style="width: 13%;">方向</th>
-                <th style="width: 11%;">观点</th>
-                <th style="width: 28%;">证据</th>
-                <th style="width: 24%;">相关原句</th>
-                <th style="width: 16%;">风险</th>
-                <th style="width: 8%;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="fundamentalBody"></tbody>
-          </table>
-        </div>
-      </section>
 
-      <section id="source-insights" class="section-band" aria-label="信息源观点">
-        <div class="section-head">
-          <h2>信息源观点</h2>
-          <p class="section-note">按来源聚合后的题材、观点、理由、风险和相关原句</p>
-        </div>
-        <div id="sourceInsightTables"></div>
-      </section>
 
-      <section class="content-grid">
-        <section id="items" class="panel panel-main">
-          <div class="panel-head">
-            <div>
-              <h2>信息流</h2>
-              <p id="tableHint">按日报结构展示：题材、标的、观点、理由、风险和原句。</p>
-            </div>
-            <button id="resetFilters" class="secondary-btn">重置筛选</button>
+
           </div>
-          <div class="table-wrap">
-            <table class="items-table">
-              <thead>
-                <tr>
-                  <th class="col-theme">题材</th>
-                  <th class="col-tickers">标的</th>
-                  <th class="col-view">观点</th>
-                  <th class="col-specific">具体标的</th>
-                  <th class="col-reason">理由</th>
-                  <th class="col-risk">风险</th>
-                  <th class="col-quote">相关原句</th>
-                  <th class="col-actions">操作</th>
-                </tr>
-              </thead>
-              <tbody id="itemsBody"></tbody>
-            </table>
-          </div>
+          <div id="activeFilterSummary" class="active-filter-summary"></div>
         </section>
 
-        <aside id="ticker-summary-section" class="panel side-panel">
-          <div class="panel-head compact">
-            <div>
-              <h2>按标的聚合</h2>
-              <p>随时间窗口和筛选条件实时变化。</p>
+        <section id="daily-originals" class="section-band raw-review-section" aria-label="每日原文审阅">
+          <div class="section-head raw-review-head">
+            <div><p class="section-index">02 · ORIGINALS</p><h2>每日原文审阅</h2><p id="rawReviewHint" class="section-note">先读事实，再进入观点。</p></div>
+            <div class="raw-review-actions">
+              <div class="raw-group-switch" role="group" aria-label="原文折叠方式">
+                <button class="raw-group-option active" type="button" data-raw-group="date" aria-pressed="true">按日期</button>
+                <button class="raw-group-option" type="button" data-raw-group="author" aria-pressed="false">按作者</button>
+              </div>
+              <button id="rawReviewSort" class="raw-sort-toggle" type="button" aria-label="当前倒序：最新在前。点击切换为顺序" title="倒序 · 最新在前"><span aria-hidden="true">⇊</span></button>
             </div>
           </div>
-          <div id="tickerSummary" class="ticker-summary"></div>
-        </aside>
-      </section>
+          <div id="dailyOriginals" class="daily-originals"></div>
+        </section>
 
-      <section id="ticker-history" class="section-band" aria-label="标的历史观点串联">
-        <div class="section-head">
-          <h2>标的历史观点串联</h2>
-          <p class="section-note">按当前筛选结果里的高频标的，串联不同日期和来源的观点变化</p>
-        </div>
-        <div id="tickerHistory" class="history-grid"></div>
-      </section>
+        <section id="source-insights" class="section-band source-insight-section" aria-label="信息源观点">
+          <div class="section-head"><div><p class="section-index">03 · SOURCES</p><h2>信息源观点</h2><p id="sourceInsightNote" class="section-note">只展示当前作者和筛选条件命中的观点。</p></div></div>
+          <div id="sourceInsightTables"></div>
+        </section>
+      </div>
 
-      <section id="quality" class="section-band" aria-label="数据质量与后续补强">
-        <div class="section-head">
-          <h2>数据质量与后续补强</h2>
-          <p class="section-note">采集完整性、字段覆盖和后续需要接入的模块</p>
-        </div>
-        <ul id="qualityList" class="quality-list"></ul>
-      </section>
+      <div id="historyView" class="view-panel" data-view-panel="history" role="tabpanel" hidden>
+        <section id="ticker-history" class="section-band history-section" aria-label="标的历史观点串联">
+          <div class="section-head history-head"><div><p class="section-index">TIMELINE · HORIZONTAL</p><h2>标的历史观点串联</h2><p class="section-note">按板块分组，只保留原文；每个标的从左到右按最新到最早排列。</p></div><button class="secondary-btn" type="button" data-switch-view="feed">返回筛选</button></div>
+          <div id="tickerHistory" class="history-grid"></div>
+        </section>
+      </div>
     </main>
 
     <div id="globalCopyNotice" class="global-copy-notice" role="status" aria-live="polite"></div>
-
     <aside id="analysisDrawer" class="drawer" aria-hidden="true">
       <div class="drawer-scrim" id="drawerScrim"></div>
       <section class="drawer-panel" aria-label="进阶分析上下文">
-        <div class="drawer-head">
-          <div>
-            <p class="eyebrow">Advanced Context</p>
-            <h2 id="drawerTitle">数据进阶分析</h2>
-          </div>
-          <button id="closeDrawer" class="icon-btn" aria-label="关闭">×</button>
-        </div>
-        <div class="drawer-actions">
-          <button id="copyContext" class="primary-btn">复制给 Codex</button>
-          <button id="copyJson" class="secondary-btn">复制原始 JSON</button>
-          <a id="openOriginal" class="secondary-link" href="#" target="_blank" rel="noreferrer">打开原文</a>
-        </div>
-        <div id="copyNotice" class="copy-notice" role="status"></div>
-        <div id="drawerContent" class="drawer-content"></div>
+        <div class="drawer-head"><div><p class="eyebrow">ADVANCED CONTEXT</p><h2 id="drawerTitle">数据进阶分析</h2></div><button id="closeDrawer" class="icon-btn" aria-label="关闭">×</button></div>
+        <div class="drawer-actions"><button id="copyContext" class="primary-btn">复制给 Codex</button><button id="copyJson" class="secondary-btn">复制原始 JSON</button><a id="openOriginal" class="secondary-link" href="#" target="_blank" rel="noreferrer">打开原文</a></div>
+        <div id="copyNotice" class="copy-notice" role="status"></div><div id="drawerContent" class="drawer-content"></div>
       </section>
     </aside>
   </div>
-
-  <script src="./data/sample_items.js"></script>
-  <script src="./src/app.js"></script>
+  <script src="./src/app.js?v=20260903-image-lightbox-6"></script>
 </body>
 </html>

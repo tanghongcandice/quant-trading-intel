@@ -3,11 +3,13 @@ from __future__ import annotations
 try:
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.staticfiles import StaticFiles
 except ImportError:  # FastAPI is optional until the service dependencies are installed.
     FastAPI = None  # type: ignore
     HTTPException = Exception  # type: ignore
     Query = None  # type: ignore
     CORSMiddleware = None  # type: ignore
+    StaticFiles = None  # type: ignore
 
 from app.core.config import get_settings
 from app.services.context_service import build_item_context
@@ -16,6 +18,7 @@ from app.services.query_service import get_item, query_items
 
 
 if FastAPI:
+    settings = get_settings()
     app = FastAPI(title="Quant Trading Intel API", version="0.1.0")
     app.add_middleware(
         CORSMiddleware,
@@ -23,6 +26,9 @@ if FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+    media_dir = settings.data_dir / "media"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/media", StaticFiles(directory=media_dir), name="media")
 
     @app.get("/health")
     def health() -> dict:
@@ -70,6 +76,8 @@ if FastAPI:
             return build_item_context(settings.db_path, item_id, format=format)
         except KeyError:
             raise HTTPException(status_code=404, detail="Item not found")
+        except PermissionError:
+            raise HTTPException(status_code=409, detail="Review-only item is excluded from analysis")
 
     @app.get("/api/runs")
     def api_runs(limit: int = 50, offset: int = 0) -> dict:

@@ -11,7 +11,7 @@ from ..models import build_information_item
 from ..utils import command_for_log, ensure_dir, resolve_path, run_subprocess, safe_slug, write_text
 
 
-DEFAULT_SUBSTACK_SCRIPT = "/Users/bytedance/.codex/skills/substack-crawler/scripts/substack_crawl.py"
+DEFAULT_SUBSTACK_SCRIPT = ""
 
 
 class SubstackAdapter(SourceAdapter):
@@ -22,6 +22,25 @@ class SubstackAdapter(SourceAdapter):
         source_id = source["id"]
         raw_dir = ensure_dir(context.raw_dir / source_id)
         fixture_dir = source.get("fixture_dir")
+        browser_snapshot = source.get("browser_snapshot")
+
+        if context.dry_run:
+            return AdapterResult(
+                source_id=source_id,
+                source_type=self.source_type,
+                stats={"mode": source.get("mode", "download"), "dry_run": True},
+            )
+
+        if source.get("mode") == "browser_session":
+            if not browser_snapshot:
+                return AdapterResult(source_id, self.source_type, stats={"mode": "browser_session", "skipped": True, "reason": "browser_snapshot_not_configured"})
+            path = resolve_path(browser_snapshot, context.base_dir)
+            if not path.exists():
+                return AdapterResult(source_id, self.source_type, stats={"mode": "browser_session", "skipped": True, "reason": "browser_snapshot_missing", "snapshot": str(path)})
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            posts = payload if isinstance(payload, list) else payload.get("items", [payload])
+            items = [self._normalize_browser_post(source, context, post) for post in posts if isinstance(post, dict)]
+            return AdapterResult(source_id, self.source_type, items=items, artifacts=[str(path)], stats={"mode": "browser_session", "normalized_count": len(items)})
 
         if fixture_dir:
             input_dir = resolve_path(fixture_dir, context.base_dir)
@@ -36,14 +55,6 @@ class SubstackAdapter(SourceAdapter):
 
         mode = source.get("mode", "download")
         command, output_dir = self._build_command(source, raw_dir)
-        if context.dry_run:
-            return AdapterResult(
-                source_id=source_id,
-                source_type=self.source_type,
-                stats={"mode": mode, "dry_run": True},
-                planned_commands=[command_for_log(command)],
-            )
-
         result = run_subprocess(command, timeout_seconds=context.timeout_seconds)
         write_text(raw_dir / "stdout.log", result.stdout)
         write_text(raw_dir / "stderr.log", result.stderr)
@@ -66,8 +77,26 @@ class SubstackAdapter(SourceAdapter):
             planned_commands=[command_for_log(command)],
         )
 
+    def _normalize_browser_post(self, source: dict[str, Any], context: AdapterContext, post: dict[str, Any]) -> dict[str, Any]:
+        external_url = post.get("url") or source.get("url")
+        host = urlparse(external_url or "").netloc
+        return build_information_item(
+            source_type=self.source_type, source_id=source["id"],
+            source_name=source.get("name") or host or source["id"],
+            collector="browser-session", adapter_version=self.adapter_version,
+            tags=source.get("tags", []), external_id=external_url or post.get("title"),
+            external_url=external_url, title=post.get("title"),
+            content_text=post.get("content_html") or post.get("content") or "",
+            language=source.get("language"), author={"external_id": host.split(".")[0] if host else None,
+            "handle": host.split(".")[0] if host else None, "display_name": source.get("name"),
+            "profile_url": source.get("url"), "metadata": {}},
+            created_at=post.get("published") or post.get("created_at"), collected_at=context.collected_at,
+            metrics={}, raw_payload={"browser_snapshot": post, "source_config_id": source["id"]})
+
     def _build_command(self, source: dict[str, Any], raw_dir: Path) -> tuple[list[str], Path]:
         script = source.get("script") or DEFAULT_SUBSTACK_SCRIPT
+        if not script:
+            raise RuntimeError("Substack command-line crawler has been removed; provide a browser_session snapshot")
         mode = source.get("mode", "download")
         url = source["url"]
         output_dir = raw_dir / "download"

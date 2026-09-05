@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,21 @@ def _run_source(
             raw_dir=source_raw_dir,
         )
         try:
+            # Browser snapshots must be refreshed before every collection.
+            # Refuse stale captures instead of reporting a misleading
+            # "no new items" result from an old file.
+            snapshot_ref = source.get("browser_snapshot") or (
+                source.get("fixture_file") if source.get("mode") == "browser_session" else None
+            )
+            if snapshot_ref and not dry_run:
+                snapshot_path = resolve_path(str(snapshot_ref), context.base_dir)
+                max_age_hours = float(source.get("max_snapshot_age_hours", 6))
+                age_hours = (time.time() - snapshot_path.stat().st_mtime) / 3600 if snapshot_path.exists() else max_age_hours + 1
+                if age_hours > max_age_hours:
+                    raise RuntimeError(
+                        f"stale browser snapshot ({age_hours:.1f}h old; limit {max_age_hours:.1f}h): {snapshot_path}. "
+                        "Refresh the browser page and capture a new snapshot before running ingestion."
+                    )
             adapter = adapter_for(source_type)
             result = adapter.collect(source, context)
             seen_at = utc_now_iso()
@@ -188,8 +204,37 @@ def _run_source(
             duplicate_count = 0
             emitted_docs: list[dict[str, Any]] = []
 
+            # Apply the independent successful watermark with a small overlap
+            # window.  The complete browser snapshot remains in artifacts;
+            # this only controls which records are candidates for this run.
+            cursor = state.get_cursor(source_id)
+            cutoff = None
+            if cursor and cursor.get("last_successful_created_at"):
+                try:
+                    cutoff = datetime.fromisoformat(str(cursor["last_successful_created_at"]).replace("Z", "+00:00")) - timedelta(hours=2)
+                except ValueError:
+                    cutoff = None
+            candidate_items = result.items
+            if cutoff is not None:
+                candidate_items = []
+                for doc in result.items:
+                    raw = ((doc.get("timestamps") or {}).get("created_at"))
+                    try:
+                        created = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    except (TypeError, ValueError):
+                        # Keep undated records; dedupe protects against repeats.
+                        candidate_items.append(doc)
+                        continue
+                    try:
+                        if created >= cutoff:
+                            candidate_items.append(doc)
+                    except TypeError:
+                        # A timezone-less legacy timestamp is retained and
+                        # handled by external-id/content dedupe.
+                        candidate_items.append(doc)
+
             if not dry_run:
-                for item in result.items:
+                for item in candidate_items:
                     inserted, item_id = state.upsert_item(item, context.run_id, seen_at)
                     item["id"] = item_id
                     item.setdefault("ingestion", {})
@@ -209,6 +254,20 @@ def _run_source(
                         emitted_docs.append(item)
                 append_jsonl(items_path, emitted_docs)
 
+            # Advance only after the source completed successfully and after
+            # all candidate items were persisted.  Never derive this from the
+            # snapshot filename/order or move it backwards.
+            if not dry_run and candidate_items:
+                dated = [i for i in candidate_items if (i.get("timestamps") or {}).get("created_at")]
+                if dated:
+                    latest = max(dated, key=lambda i: str((i.get("timestamps") or {}).get("created_at")))
+                    state.advance_cursor(
+                        source_id,
+                        (latest.get("timestamps") or {}).get("created_at"),
+                        (latest.get("external") or {}).get("id"),
+                        context.run_id,
+                    )
+
             item_count = len(result.items)
             state.finish_source(
                 run_id=context.run_id,
@@ -225,6 +284,9 @@ def _run_source(
                 "status": "success",
                 "attempt": attempt,
                 "item_count": item_count,
+                "candidate_count": len(candidate_items),
+                "cursor": cursor,
+                "cursor_cutoff": cutoff.isoformat() if cutoff else None,
                 "new_count": new_count,
                 "duplicate_count": duplicate_count,
                 "emitted_count": len(emitted_docs),
