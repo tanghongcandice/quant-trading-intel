@@ -22,6 +22,7 @@ ARTICLES = {
     "R-niTPaPBXfaKXmz3YFkdw": [(10, 10)],
     "8TlHdEO4itl5nsi2maSOrg": [(6, 13), (15, 20)],
     "zb6ifrVgBXdSmogFAclbkA": [(7, 19)],
+    "ONe1_t_GHdtLd11FVsLrxQ": [(4, 11), (13, 16)],
 }
 
 USER_AGENT = (
@@ -43,7 +44,7 @@ def fetch(url: str) -> bytes:
     ).stdout
 
 
-def publish_info(page: str) -> tuple[int, str, str]:
+def publish_info(page: str, slug: str = "") -> tuple[int, str, str]:
     for encoded in re.findall(r"s1s_context_info:\s*['\"]([^'\"]+)", page):
         try:
             info = json.loads(unquote(encoded)).get("doc_info") or {}
@@ -53,14 +54,18 @@ def publish_info(page: str) -> tuple[int, str, str]:
             return published, external_id, str(info.get("docid") or "")
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
+    epoch_match = re.search(r"\b(?:ori_create_time|create_timestamp):\s*['\"](\d{10})['\"]", page)
+    if epoch_match and slug:
+        return int(epoch_match.group(1)), f"url:{slug}", ""
     # Newer WeChat pages omit the inline doc_info blob; retain the visible
     # publish timestamp and use the stable article URL slug as the ID.
     m = re.search(r'年(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})', page)
-    if m:
+    if m and slug:
         from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
         year = int(re.search(r'(20\d{2})年', page).group(1))
-        published = int(datetime(year, int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), tzinfo=timezone.utc).timestamp())
-        return published, "url:ZdPKiHGCaBGXFSnWbIFK2A", ""
+        published = int(datetime(year, int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), tzinfo=ZoneInfo("Asia/Shanghai")).timestamp())
+        return published, f"url:{slug}", ""
     raise ValueError("WeChat publish_time/doc_info was not found")
 
 
@@ -91,7 +96,7 @@ def build_item(url: str, raw_path: Path, collected_at: str) -> dict:
     document = html.fromstring(page)
     title = (document.xpath('//meta[@property="og:title"]/@content') or [""])[0].strip()
     try:
-        published, external_id, docid = publish_info(page)
+        published, external_id, docid = publish_info(page, slug)
     except ValueError:
         if slug == "ZdPKiHGCaBGXFSnWbIFK2A":
             published, external_id, docid = 1788340740, f"url:{slug}", ""

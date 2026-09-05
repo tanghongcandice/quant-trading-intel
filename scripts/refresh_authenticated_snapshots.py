@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Refresh X, Discord, Substack and Douyin browser snapshots using persistent profiles."""
+"""Legacy/manual repair utility for Discord and Substack browser snapshots.
+
+The scheduled pipeline no longer reads these snapshots: X, Discord, and
+Substack all invoke live command-line collectors. Keep this script only for
+manual DOM diagnostics and historical snapshot repair.
+"""
 import argparse, asyncio, json, re
 from pathlib import Path
 from playwright.async_api import async_playwright
@@ -7,9 +12,6 @@ from playwright.async_api import async_playwright
 ROOT = Path(__file__).resolve().parents[1]
 CHROME_BIN = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 JOBS = [
- ("x_haochihaochiaaa", "x", "https://x.com/haochihaochiaaa", "x_browser_extract.js", {"username":"haochihaochiaaa"}),
- ("x_aleabitoreddit", "x", "https://x.com/aleabitoreddit", "x_browser_extract.js", {"username":"aleabitoreddit"}),
- ("x_edgerunner17888", "x", "https://x.com/edgerunner17888", "x_browser_extract.js", {"username":"edgerunner17888"}),
  ("discord_tianyi_edgerunner_trades", "discord", "https://discord.com/channels/1369047294560698450/1372032779050684616", "discord_browser_extract.js", {"guildId":"1369047294560698450","channelId":"1372032779050684616"}),
  ("discord_haochi_daqu", "discord", "https://discord.com/channels/1409416284621508620/1461938466840379463", "discord_browser_extract.js", {"guildId":"1409416284621508620","channelId":"1461938466840379463"}),
  ("discord_club500_edgerunner_messages", "discord", "https://discord.com/channels/1466161319433601179/1466187555262173436", "discord_browser_extract.js", {"guildId":"1466161319433601179","channelId":"1466187555262173436"}),

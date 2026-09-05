@@ -60,7 +60,7 @@ class XAdapter(SourceAdapter):
 
     def _build_command(self, source: dict[str, Any], base_dir: Path, raw_dir: Path) -> tuple[list[str], Path]:
         if not source.get("script"):
-            raise RuntimeError("X command-line crawler has been removed; provide a browser_session snapshot")
+            raise RuntimeError("X user_tweets mode requires the x-crawler wrapper script")
         script = self._script_path(source.get("script") or DEFAULT_X_SCRIPT, base_dir)
         mode = source.get("mode", "search")
         limit = int(source.get("limit", 20))

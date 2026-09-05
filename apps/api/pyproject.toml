@@ -5,6 +5,7 @@ description = "Local API and database service for quant trading intelligence."
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110",
+  "playwright>=1.46",
   "uvicorn>=0.27"
 ]
 

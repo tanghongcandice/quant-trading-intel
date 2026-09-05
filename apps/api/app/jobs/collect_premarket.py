@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -81,7 +83,26 @@ def run_collection(
     summary = _extract_summary(completed.stdout)
     items_path = Path(summary.get("items_path") or "")
     import_stats = None
+    pending_review = []
     if not dry_run and items_path.exists():
+        docs = [json.loads(line) for line in items_path.read_text().splitlines() if line.strip()]
+        blocked_sources = set()
+        for doc in docs:
+            source = doc.get('source') or {}
+            if source.get('type') != 'discord':
+                continue
+            text = (doc.get('content') or {}).get('text') or ''
+            raw = doc.get('raw_payload') or {}
+            translation = raw.get('translation') or {}
+            if len(re.findall('[A-Za-z]', text)) >= 4 and not re.search('[\u4e00-\u9fff]', text) and not (translation.get('text') if isinstance(translation, dict) else translation):
+                blocked_sources.add(source['id'])
+        pending_review = [doc for doc in docs if (doc.get('source') or {}).get('id') in blocked_sources]
+        if pending_review:
+            pending_path = items_path.with_name('pending_codex_review.jsonl')
+            pending_path.write_text(''.join(json.dumps(d, ensure_ascii=False) + '\n' for d in pending_review))
+            ready_path = items_path.with_name('ready_to_import.jsonl')
+            ready_path.write_text(''.join(json.dumps(d, ensure_ascii=False) + '\n' for d in docs if (d.get('source') or {}).get('id') not in blocked_sources))
+            items_path = ready_path
         import_stats = import_jsonl(
             settings.db_path,
             items_path,
@@ -91,6 +112,14 @@ def run_collection(
 
     scheduler_status = summary.get("status") or "unknown"
     result_status = "success" if scheduler_status == "success" else scheduler_status
+    if pending_review:
+        result_status = 'awaiting_codex_review'
+    if import_stats is not None and result_status != 'success':
+        with sqlite3.connect(settings.db_path) as db:
+            db.execute('UPDATE ingestion_runs SET status=?, summary_json=? WHERE id=?', (
+                result_status, json.dumps({'import_stats':import_stats, 'scheduler_status':scheduler_status,
+                    'pending_review_count':len(pending_review), 'pending_review_path':str(pending_path) if pending_review else None}),
+                summary.get('run_id')))
 
     return {
         "status": result_status,
@@ -99,6 +128,8 @@ def run_collection(
         "config": str(config),
         "scheduler_summary": summary,
         "import_stats": import_stats,
+        "pending_review_count": len(pending_review),
+        "pending_review_path": str(pending_path) if pending_review else None,
     }
 
 

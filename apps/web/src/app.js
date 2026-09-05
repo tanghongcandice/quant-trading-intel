@@ -827,6 +827,7 @@
   }
 
   function renderDailyOriginals(rows) {
+    rows = rows.filter(item => item.sourceType !== "discord" || item.text?.trim() || item.staticImages?.length);
     const direction = state.reviewSort === "asc" ? 1 : -1;
     const days = Array.from(groupBy(rows, (item) => toLocalParts(item.createdMs, state.timezone).date).entries())
       .sort((a, b) => direction * a[0].localeCompare(b[0]));

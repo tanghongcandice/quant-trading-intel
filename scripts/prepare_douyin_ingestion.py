@@ -62,6 +62,39 @@ def _cursor_cutoff(root: Path, source_id: str) -> datetime | None:
         return None
 
 
+def _restricted_access_label(detail: dict) -> str | None:
+    """Return an explicit paid/member label from Douyin detail metadata."""
+    control = detail.get("video_control") or {}
+    reasons = " ".join(
+        str(value) for key, value in control.items()
+        if ("reason" in key or "msg" in key) and value
+    )
+    for label in ("专属会员", "会员专属", "会员专享", "会员内容", "会员可见", "付费作品", "付费内容", "订阅专享"):
+        if label in reasons:
+            return label
+    paid = detail.get("entertainment_video_paid_way") or {}
+    series = detail.get("series_paid_info") or {}
+    if paid.get("paid_type") or paid.get("paid_ways") or series.get("series_paid_status") or series.get("item_price"):
+        return "付费内容"
+    return None
+
+
+def _apply_metadata_access_guard(root: Path, works: list[dict]) -> None:
+    metadata_root = root / "data" / "douyin_metadata"
+    for row in works:
+        aid = str(row.get("aweme_id") or "")
+        path = metadata_root / f"{aid}_data.json"
+        if not path.exists():
+            continue
+        try:
+            label = _restricted_access_label(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            continue
+        if label:
+            row["review_only"] = True
+            row["access_label"] = label
+
+
 def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     cfg = PROFILES[source_id]
     snapshot_path = root / cfg["snapshot"]
@@ -104,6 +137,9 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
                 except (TypeError, ValueError):
                     pass
             works.append(row)
+    # A rendered badge is the first guard. Existing public detail metadata is
+    # the second guard and wins over a false-negative browser snapshot.
+    _apply_metadata_access_guard(root, works)
     normalized = {"author": payload.get("author") or cfg["author_name"], "works": works}
     temp = root / "runs" / f".{source_id}.normalized.json"
     temp.parent.mkdir(parents=True, exist_ok=True)

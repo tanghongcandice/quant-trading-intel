@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -11,7 +12,7 @@ from ..models import build_information_item
 from ..utils import command_for_log, ensure_dir, resolve_path, run_subprocess, safe_slug, write_text
 
 
-DEFAULT_SUBSTACK_SCRIPT = ""
+DEFAULT_SUBSTACK_SCRIPT = "scripts/substack_project.py"
 
 
 class SubstackAdapter(SourceAdapter):
@@ -96,11 +97,13 @@ class SubstackAdapter(SourceAdapter):
     def _build_command(self, source: dict[str, Any], raw_dir: Path) -> tuple[list[str], Path]:
         script = source.get("script") or DEFAULT_SUBSTACK_SCRIPT
         if not script:
-            raise RuntimeError("Substack command-line crawler has been removed; provide a browser_session snapshot")
+            raise RuntimeError("Substack download mode requires a crawler script")
         mode = source.get("mode", "download")
         url = source["url"]
         output_dir = raw_dir / "download"
-        cmd = [script, mode, url]
+        script_path = resolve_path(script, raw_dir.parents[3]) if not Path(script).expanduser().is_absolute() else Path(script).expanduser()
+        cmd = [sys.executable, str(script_path)] if str(script_path).endswith(".py") else [str(script_path)]
+        cmd.extend([mode, url, "--source-id", str(source["id"])])
 
         if mode == "download":
             cmd.extend(["--output", str(output_dir), "--format", source.get("format", "md")])

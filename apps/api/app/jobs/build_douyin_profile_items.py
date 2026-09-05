@@ -37,6 +37,22 @@ def load_metadata(root: Path) -> dict[str, tuple[Path, dict]]:
     return result
 
 
+def restricted_access_label(detail: dict) -> str | None:
+    control = detail.get("video_control") or {}
+    reasons = " ".join(
+        str(value) for key, value in control.items()
+        if ("reason" in key or "msg" in key) and value
+    )
+    for label in ("专属会员", "会员专属", "会员专享", "会员内容", "会员可见", "付费作品", "付费内容", "订阅专享"):
+        if label in reasons:
+            return label
+    paid = detail.get("entertainment_video_paid_way") or {}
+    series = detail.get("series_paid_info") or {}
+    if paid.get("paid_type") or paid.get("paid_ways") or series.get("series_paid_status") or series.get("item_price"):
+        return "付费内容"
+    return None
+
+
 def build_item(
     work: dict,
     metadata: dict[str, tuple[Path, dict]],
@@ -50,7 +66,9 @@ def build_item(
 ) -> dict:
     aweme_id = str(work["aweme_id"])
     title = str(work.get("title") or "").strip()
-    review_only = bool(work.get("review_only"))
+    metadata_entry = metadata.get(aweme_id)
+    metadata_access_label = restricted_access_label(metadata_entry[1]) if metadata_entry else None
+    review_only = bool(work.get("review_only") or metadata_access_label)
     no_audio = bool(work.get("no_audio"))
     no_speech = bool(work.get("no_speech"))
     created_at = utc_iso(int(aweme_id) >> 32)
@@ -148,7 +166,7 @@ def build_item(
             "market": "cn",
             "comments_collected": False,
             "profile_snapshot": True,
-            "access_label": work.get("access_label"),
+            "access_label": work.get("access_label") or metadata_access_label,
             "metadata_path": str(metadata_path.resolve()) if metadata_path else None,
             "audio_path": str(media_path.resolve()) if media_path else None,
             "transcription": transcription,

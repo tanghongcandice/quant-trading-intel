@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SKILL_SCRIPT = Path("/Users/bytedance/.codex/skills/x-crawler/scripts/xcrawl.py")
+DEFAULT_SKILL_SCRIPT = Path.home() / ".codex" / "skills" / "x-crawler" / "scripts" / "xcrawl.py"
 
 
 def main() -> None:

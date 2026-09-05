@@ -9,10 +9,18 @@ from typing import Any
 
 from .base import AdapterContext, AdapterResult, SourceAdapter
 from ..models import build_information_item
+from ..media import discord_image_candidates, download_static_images
 from ..utils import command_for_log, ensure_dir, read_json, run_subprocess, safe_slug, write_text
 
 
-DEFAULT_DISCORD_EXPORTER = "/Users/bytedance/.codex/skills/discord-crawler/scripts/discord_exporter.py"
+DEFAULT_DISCORD_EXPORTER = "scripts/discord_exporter_project.py"
+
+
+def clean_discord_body(value: str | None) -> str | None:
+    """Remove standalone Discord edit tooltip metadata, not dates in prose."""
+    text = re.sub(r"(?m)^\s*\d{4}年\d{1,2}月\d{1,2}日星期[一二三四五六日天]\s+\d{1,2}:\d{2}\s*$", "", value or "")
+    text = re.sub(r"[ \t]*[（(]已编辑[)）]", "", text)
+    return text.strip() or None
 
 
 class DiscordAdapter(SourceAdapter):
@@ -71,11 +79,6 @@ class DiscordAdapter(SourceAdapter):
             return self._result_from_docs(source, context, docs, [str(fixture_path)], [])
 
         command, output_path = self._build_command(source, context.base_dir, raw_dir)
-        if not os.environ.get("DISCORD_TOKEN"):
-            raise RuntimeError(
-                f"discord source {source_id} needs DISCORD_TOKEN with access to channel {source.get('channel_id')}"
-            )
-
         result = run_subprocess(command, timeout_seconds=context.timeout_seconds, env=os.environ.copy())
         write_text(raw_dir / "stdout.log", result.stdout)
         write_text(raw_dir / "stderr.log", result.stderr)
@@ -105,6 +108,10 @@ class DiscordAdapter(SourceAdapter):
                 "export",
                 "--channel",
                 str(source["channel_id"]),
+                "--guild",
+                str(source["guild_id"]),
+                "--source-id",
+                str(source["id"]),
                 "--output",
                 str(output_path),
                 "--format",
@@ -201,9 +208,9 @@ class DiscordAdapter(SourceAdapter):
             # Stable Discord user IDs are authoritative when supplied. Names
             # are the fallback for captures where the DOM does not expose an
             # ID (or a channel intentionally uses display-name matching).
-            return bool(author_id and author_id in target_ids) or any(
-                target == name for target in targets for name in normalized_names
-            )
+            if author_id and target_ids:
+                return author_id in target_ids
+            return any(target == name for target in targets for name in normalized_names)
 
         for doc in docs:
             if is_target(doc):
@@ -217,6 +224,7 @@ class DiscordAdapter(SourceAdapter):
             ref = doc.get("reference") or doc.get("Reference") or {}
             ref_id = ref.get("messageId") or ref.get("message_id") or ref.get("id")
             if ref_id and str(ref_id) in by_id:
+                doc['referencedMessage'] = by_id[str(ref_id)]
                 parents.append(by_id[str(ref_id)])
             elif doc.get("referencedMessage"):
                 embedded = dict(doc["referencedMessage"])
@@ -276,6 +284,16 @@ class DiscordAdapter(SourceAdapter):
                 "available": not bool(ref.get("unavailable")),
             }
 
+        static_images: list[dict[str, Any]] = []
+        if message_id:
+            static_images = download_static_images(
+                discord_image_candidates(data),
+                media_root=context.base_dir / "data" / "media",
+                source_id=source["id"],
+                external_id=str(message_id),
+                timeout_seconds=min(context.timeout_seconds, 12),
+            )
+
         return build_information_item(
             source_type=self.source_type,
             source_id=source["id"],
@@ -318,6 +336,8 @@ class DiscordAdapter(SourceAdapter):
                 "channel_name": channel_name,
                 "target_authors": source.get("target_authors") or [],
                 "reply_context": reply_context,
+                "media": {"static_images": static_images},
+                **({"translation": data.get("translation")} if data.get("translation") else {}),
                 **(
                     {
                         "analysis_role": "reply_context_only",
@@ -342,7 +362,7 @@ class DiscordAdapter(SourceAdapter):
     def _message_content(self, data: dict[str, Any]) -> str | None:
         content = data.get("content") or data.get("Content") or data.get("text") or data.get("rawText")
         if content:
-            return str(content).strip()
+            return clean_discord_body(str(content))
         embed_texts = []
         for embed in data.get("embeds") or data.get("Embeds") or []:
             if isinstance(embed, dict):

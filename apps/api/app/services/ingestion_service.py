@@ -175,6 +175,11 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             payload = parent_item.setdefault("raw_payload", {})
             if payload.get("analysis_role") == "reply_context_only":
                 continue
+            # Only non-target parents explicitly marked by the adapter are
+            # context-only. A target author's own post remains a feed item
+            # even when somebody replies to it.
+            if not (payload.get('discord') or {}).get('_context_only'):
+                continue
             payload["analysis_role"] = "reply_context_only"
             payload["analysis_policy"] = {"include": False, "mode": "context_only"}
             conn.execute(

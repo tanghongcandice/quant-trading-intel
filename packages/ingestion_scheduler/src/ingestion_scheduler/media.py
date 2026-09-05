@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +13,7 @@ from .utils import ensure_dir, safe_slug
 
 
 STATIC_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
+NON_STATIC_EXTENSIONS = {".gif", ".apng", ".mp4", ".mov", ".webm", ".m4v", ".avi"}
 EXTENSION_BY_MIME = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -66,7 +68,14 @@ def download_static_images(
         if not url or url in seen:
             continue
         seen.add(url)
-        if "gif" in declared_type or "video" in declared_type or filename.lower().endswith(".gif"):
+        filename_suffix = Path(filename).suffix.lower()
+        url_suffix = Path(urlparse(url).path).suffix.lower()
+        if (
+            "gif" in declared_type
+            or "video" in declared_type
+            or filename_suffix in NON_STATIC_EXTENSIONS
+            or url_suffix in NON_STATIC_EXTENSIONS
+        ):
             continue
         request = Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/avif,image/webp,image/png,image/jpeg"})
         try:
@@ -77,7 +86,18 @@ def download_static_images(
                 length = int(response.headers.get("Content-Length") or 0)
                 if length and length > max_bytes:
                     continue
-                data = response.read(max_bytes + 1)
+                deadline = time.monotonic() + timeout_seconds
+                chunks = []
+                size = 0
+                while size <= max_bytes:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('Image download exceeded total time budget')
+                    chunk = response.read1(min(65536, max_bytes + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                data = b''.join(chunks)
         except Exception:
             continue
         if not data or len(data) > max_bytes:

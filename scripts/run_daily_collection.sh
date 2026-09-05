@@ -10,6 +10,9 @@ RUN_ID="premarket_$(date -u '+%Y%m%dT%H%M%SZ')"
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
 fi
+if [[ "${QUANT_COLLECTION_LOCKED:-}" != "1" ]]; then
+  exec "$PYTHON_BIN" "$ROOT/scripts/collection_lock.py"
+fi
 
 log() {
   printf '\n[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$*"
@@ -25,16 +28,8 @@ cd "$API_DIR"
 collection_json="/tmp/quant_intel_daily_collection_${RUN_ID}.json"
 collection_failed=0
 
-# Refresh all non-Douyin authenticated browser sources first.
-browser_python="${BROWSER_REFRESH_PYTHON:-/Users/mac/.codex/skills/video-downloader/.runtime/douyin-downloader/.venv/bin/python}"
-set +e
-"$browser_python" "$ROOT/scripts/refresh_authenticated_snapshots.py" --root "$ROOT" --profiles "$ROOT/data/browser_profiles" >"/tmp/quant_intel_browser_refresh_${RUN_ID}.json"
-browser_refresh_rc=$?
-set -e
-cat "/tmp/quant_intel_browser_refresh_${RUN_ID}.json"
-if [[ "$browser_refresh_rc" -ne 0 ]]; then
-  fail "Authenticated browser snapshot refresh failed; scheduler run skipped"
-fi
+# X, Discord, and Substack now run through their command-line collectors in
+# the scheduler. Only Douyin still has a separate browser-refresh/build step.
 
 # Refresh the persistent authenticated Douyin browser session before rebuilding
 # snapshots. The profile is separate from the user's daily Chrome profile.

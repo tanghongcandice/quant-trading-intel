@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +16,7 @@ class StateStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(db_path))
         self.conn.row_factory = sqlite3.Row
+        self._content_index_cache: dict[tuple[str, ...], dict[str, dict[str, Any]]] = {}
         self.ensure_schema()
 
     def close(self) -> None:
@@ -182,6 +186,38 @@ class StateStore:
             return f"{source_type}:url:{external_url}"
         return f"{source_type}:source:{source_id}:content:{content_hash}"
 
+    def find_content_duplicate(self, item: dict[str, Any], source_ids: list[str]) -> dict[str, Any] | None:
+        """Find an exact normalized-text duplicate in selected sources."""
+        if not source_ids:
+            return None
+        text = str((item.get("content") or {}).get("text") or "")
+        normalized = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text)).strip().casefold()
+        if not normalized:
+            return None
+        cache_key = tuple(sorted(source_ids))
+        index = self._content_index_cache.get(cache_key)
+        if index is None:
+            placeholders = ",".join("?" for _ in source_ids)
+            rows = self.conn.execute(
+                f"SELECT item_id, source_id, external_id, raw_item_json FROM items WHERE source_id IN ({placeholders})",
+                tuple(source_ids),
+            ).fetchall()
+            index = {}
+            for row in rows:
+                try:
+                    payload = json.loads(row["raw_item_json"] or "{}")
+                    stored = str((payload.get("content") or {}).get("text") or "")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                key = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", stored)).strip().casefold()
+                if key:
+                    index.setdefault(
+                        key,
+                        {"item_id": row["item_id"], "source_id": row["source_id"], "external_id": row["external_id"]},
+                    )
+            self._content_index_cache[cache_key] = index
+        return index.get(normalized)
+
     def upsert_item(self, item: dict[str, Any], run_id: str, seen_at: str) -> tuple[bool, str]:
         dedupe_key = self.make_dedupe_key(item)
         item_id = "itm_" + sha256_text(dedupe_key)[:24]
@@ -206,6 +242,7 @@ class StateStore:
                 (seen_at, run_id, raw_item_json, dedupe_key),
             )
             self.conn.commit()
+            self._invalidate_content_indexes(str(source.get("id") or ""))
             return False, existing["item_id"]
 
         self.conn.execute(
@@ -233,7 +270,14 @@ class StateStore:
             ),
         )
         self.conn.commit()
+        self._invalidate_content_indexes(str(source.get("id") or ""))
         return True, item_id
+
+    def _invalidate_content_indexes(self, source_id: str) -> None:
+        if not source_id:
+            return
+        for key in [key for key in self._content_index_cache if source_id in key]:
+            self._content_index_cache.pop(key, None)
 
     def counts(self) -> dict[str, Any]:
         items = self.conn.execute("SELECT COUNT(*) AS count FROM items").fetchone()["count"]

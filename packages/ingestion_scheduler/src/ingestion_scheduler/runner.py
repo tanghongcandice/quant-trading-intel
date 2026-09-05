@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -113,6 +114,7 @@ def run_scheduler(
         "totals": {"items": 0, "new": 0, "duplicates": 0, "failed_sources": 0},
     }
 
+    interrupted = False
     try:
         for source in sources:
             source_summary = _run_source(
@@ -142,8 +144,11 @@ def run_scheduler(
                 summary["totals"]["failed_sources"] += 1
                 if fail_fast:
                     break
+    except BaseException:
+        interrupted = True
+        raise
     finally:
-        status = "success" if summary["totals"]["failed_sources"] == 0 else "partial_failure"
+        status = "interrupted" if interrupted else ("success" if summary["totals"]["failed_sources"] == 0 else "partial_failure")
         summary["finished_at"] = utc_now_iso()
         summary["status"] = status
         atomic_write_json(summary_path, summary)
@@ -208,6 +213,14 @@ def _run_source(
             # window.  The complete browser snapshot remains in artifacts;
             # this only controls which records are candidates for this run.
             cursor = state.get_cursor(source_id)
+            imported_ids = None
+            main_db = context.base_dir / 'data' / 'quant_intel.sqlite'
+            if source_type == 'discord' and main_db.exists():
+                with sqlite3.connect(f'file:{main_db}?mode=ro', uri=True) as db:
+                    db.row_factory = sqlite3.Row
+                    row = db.execute('SELECT * FROM source_cursors WHERE source_id=?', (source_id,)).fetchone()
+                    cursor = dict(row) if row else None
+                    imported_ids = {str(r[0]) for r in db.execute('SELECT external_id FROM information_items WHERE source_id=?', (source_id,))}
             cutoff = None
             if cursor and cursor.get("last_successful_created_at"):
                 try:
@@ -235,6 +248,21 @@ def _run_source(
 
             if not dry_run:
                 for item in candidate_items:
+                    duplicate_of = state.find_content_duplicate(
+                        item, [str(value) for value in source.get("dedupe_against_sources") or []]
+                    )
+                    if duplicate_of:
+                        duplicate_count += 1
+                        append_jsonl(
+                            context.run_dir / "cross_source_dedupe_audit.jsonl",
+                            [{
+                                "source_id": source_id,
+                                "external_id": (item.get("external") or {}).get("id"),
+                                "duplicate_of": duplicate_of,
+                                "seen_at": seen_at,
+                            }],
+                        )
+                        continue
                     inserted, item_id = state.upsert_item(item, context.run_id, seen_at)
                     item["id"] = item_id
                     item.setdefault("ingestion", {})
@@ -250,7 +278,7 @@ def _run_source(
                         new_count += 1
                     else:
                         duplicate_count += 1
-                    if inserted or include_duplicates:
+                    if inserted or include_duplicates or (imported_ids is not None and str((item.get('external') or {}).get('id')) not in imported_ids):
                         emitted_docs.append(item)
                 append_jsonl(items_path, emitted_docs)
 

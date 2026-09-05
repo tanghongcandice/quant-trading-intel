@@ -17,9 +17,10 @@ EXTRACT = """
   const ps=Array.from(link.querySelectorAll('p')).map(n=>String(n.innerText||'').trim()).filter(Boolean);
   const alt=link.querySelector('img[alt]')?.getAttribute('alt')||'';
   const title=ps.pop()||alt.replace(new RegExp('^'+__AUTHOR__+'：?'),'').trim()||card;
-  const badge=Array.from(link.querySelectorAll('[class*="badge"],[class*="label"],[class*="vip"],[class*="member"]')).map(n=>String(n.innerText||'').trim()).filter(Boolean).join(' ');
-  const reviewOnly=/^(专属会员|会员专属|付费作品|付费内容)$/.test(badge);
-  works.push({aweme_id:m[1],url:'https://www.douyin.com/video/'+m[1],author:__AUTHOR__,title,review_only:reviewOnly,access_label:reviewOnly?'付费':null,pinned:card.includes('置顶'),_browser_session:true});
+  const accessPattern=/(专属会员|会员专属|会员专享|会员内容|会员可见|付费作品|付费内容|订阅专享)/;
+  const badge=Array.from(link.querySelectorAll('[class*="badge"],[class*="label"],[class*="tag"],[class*="vip"],[class*="member"],[data-e2e*="badge"],[aria-label]')).map(n=>String(n.innerText||n.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim()).filter(t=>t&&t.length<=40).join(' ');
+  const match=badge.match(accessPattern), reviewOnly=Boolean(match);
+  works.push({aweme_id:m[1],url:'https://www.douyin.com/video/'+m[1],author:__AUTHOR__,title,review_only:reviewOnly,access_label:reviewOnly?(match[1]||'付费内容'):null,pinned:card.includes('置顶'),_browser_session:true});
  } return works; }
 """
 

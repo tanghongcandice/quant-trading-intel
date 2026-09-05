@@ -75,6 +75,9 @@ def query_items(
     # Some legacy rows contain non-JSON raw payloads; guard json_extract so a
     # single malformed historical record cannot turn the whole API into 500.
     where.append("CASE WHEN json_valid(i.raw_json) THEN COALESCE(json_extract(i.raw_json, '$.raw_payload.analysis_role'), '') ELSE '' END <> 'reply_context_only'")
+    # A reply preview is not the message body. Do not display empty/GIF-only
+    # Discord messages after unsupported media has been discarded.
+    where.append("(i.source_type <> 'discord' OR LENGTH(TRIM(COALESCE(i.content_text, ''))) > 0 OR CASE WHEN json_valid(i.raw_json) THEN COALESCE(json_array_length(i.raw_json, '$.raw_payload.media.static_images'), 0) + COALESCE(json_array_length(i.raw_json, '$.raw_payload.static_images'), 0) ELSE 0 END > 0)")
     where_sql = "WHERE " + " AND ".join(where) if where else ""
     limit = max(1, min(limit, 500))
     offset = max(0, offset)

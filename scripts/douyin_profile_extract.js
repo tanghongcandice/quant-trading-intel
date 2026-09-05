@@ -24,9 +24,14 @@ async ({ authorName = "久韭究财" } = {}) => {
     // Do not search the whole card text: Douyin may inject page-level
     // subscription prompts into it. Only treat an explicit badge/label inside
     // the work card as restricted access.
-    const badgeText = Array.from(link.querySelectorAll('[class*="badge"], [class*="label"], [class*="vip"], [class*="member"]'))
-      .map((node) => String(node.innerText || '').trim()).filter(Boolean).join(' ');
-    const reviewOnly = /^(专属会员|会员专属|付费作品|付费内容)$/.test(badgeText);
+    const accessPattern = /(专属会员|会员专属|会员专享|会员内容|会员可见|付费作品|付费内容|订阅专享)/;
+    const badgeText = Array.from(link.querySelectorAll(
+      '[class*="badge"], [class*="label"], [class*="tag"], [class*="vip"], [class*="member"], [data-e2e*="badge"], [aria-label]'
+    ))
+      .map((node) => String(node.innerText || node.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+      .filter((text) => text && text.length <= 40)
+      .join(' ');
+    const reviewOnly = accessPattern.test(badgeText);
 
     works.push({
       aweme_id: awemeId,
@@ -34,7 +39,7 @@ async ({ authorName = "久韭究财" } = {}) => {
       author: authorName,
       title,
       review_only: reviewOnly,
-      access_label: reviewOnly ? (cardText.includes("专属会员") ? "专属会员" : "付费") : null,
+      access_label: reviewOnly ? (badgeText.match(accessPattern)?.[1] || "付费内容") : null,
       pinned: cardText.includes("置顶"),
       _browser_session: true,
     });
