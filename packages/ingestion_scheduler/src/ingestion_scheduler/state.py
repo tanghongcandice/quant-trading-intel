@@ -188,6 +188,10 @@ class StateStore:
 
     def find_content_duplicate(self, item: dict[str, Any], source_ids: list[str]) -> dict[str, Any] | None:
         """Find an exact normalized-text duplicate in selected sources."""
+        # Discord cross-post decisions require the final database, timestamps,
+        # media and reply context. State-only text matching loses distinct trades.
+        if item.get('source', {}).get('type') == 'discord':
+            return None
         if not source_ids:
             return None
         text = str((item.get("content") or {}).get("text") or "")

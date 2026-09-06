@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+from app.services.link_policy import is_link_only, suppress_link_translation
 
 
 def load_records(path: Path) -> dict[str, dict[str, Any]]:
@@ -27,6 +28,10 @@ def main() -> None:
         if not line.strip():
             continue
         item = json.loads(line)
+        if is_link_only(item):
+            suppress_link_translation(item)
+            output.append(json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+            continue
         external_id = str((item.get("external") or {}).get("id") or "")
         record = translations.get(external_id)
         if record:

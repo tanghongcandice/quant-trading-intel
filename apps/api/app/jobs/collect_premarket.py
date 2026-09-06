@@ -12,6 +12,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.ingestion_service import import_jsonl
+from app.services.link_policy import is_link_only
 
 
 def _default_scheduler_src(project_root: Path) -> Path:
@@ -94,6 +95,8 @@ def run_collection(
             text = (doc.get('content') or {}).get('text') or ''
             raw = doc.get('raw_payload') or {}
             translation = raw.get('translation') or {}
+            if is_link_only(doc):
+                continue
             if len(re.findall('[A-Za-z]', text)) >= 4 and not re.search('[\u4e00-\u9fff]', text) and not (translation.get('text') if isinstance(translation, dict) else translation):
                 blocked_sources.add(source['id'])
         pending_review = [doc for doc in docs if (doc.get('source') or {}).get('id') in blocked_sources]

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.db import connect
+from app.services.link_policy import suppress_link_translation
+from app.services.discord_guard import enforce, target, sid as discord_source_id, SOURCES
 
 
 def utc_now_iso() -> str:
@@ -72,6 +74,8 @@ def entity_records(item: dict[str, Any]) -> list[tuple]:
 
 def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mode: str = "manual_import") -> dict[str, Any]:
     items = read_jsonl(jsonl_path)
+    for item in items:
+        suppress_link_translation(item)
     actual_run_id = run_id or "run_import_" + utc_now_iso().replace("-", "").replace(":", "").replace("Z", "Z")
     started_at = utc_now_iso()
     inserted = 0
@@ -79,6 +83,7 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
     entity_count = 0
 
     with connect(db_path) as conn:
+        conn.execute('BEGIN IMMEDIATE')
         # Watermark is separate from raw browser snapshots and advances only
         # after a successful import transaction.
         conn.execute("""CREATE TABLE IF NOT EXISTS source_cursors (
@@ -106,6 +111,10 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             ),
         )
         for item in items:
+            if discord_source_id(item) in SOURCES and not target(item):
+                item.setdefault('raw_payload', {}).update(analysis_role='reply_context_only', analysis_policy={'include':False,'mode':'context_only'})
+                item['entities'] = []
+                item['analysis'] = None
             before = conn.total_changes
             conn.execute(
                 """
@@ -193,6 +202,8 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
         by_source: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             sid = (item.get("source") or {}).get("id")
+            if sid in SOURCES and not target(item):
+                continue
             if sid:
                 by_source.setdefault(str(sid), []).append(item)
         for sid, source_items in by_source.items():
@@ -213,12 +224,15 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
                 (sid, created, (latest.get("external") or {}).get("id"), finished_at, actual_run_id),
             )
 
+        guard_stats = enforce(conn, actual_run_id)
+        retained = conn.execute('SELECT count(*) FROM information_items WHERE run_id=?',(actual_run_id,)).fetchone()[0]
         summary = {
             "jsonl_path": str(jsonl_path),
             "db_path": str(db_path),
             "run_id": actual_run_id,
             "read_items": len(items),
-            "inserted_items": inserted,
+            "inserted_items": retained,
+            "discord_guard": guard_stats,
             "skipped_duplicates": skipped,
             "inserted_entities": entity_count,
         }
@@ -228,7 +242,7 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             SET status = ?, finished_at = ?, item_count = ?, error_count = ?, summary_json = ?
             WHERE id = ?
             """,
-            ("success", finished_at, inserted, 0, json.dumps(summary, ensure_ascii=False, sort_keys=True), actual_run_id),
+            ("success", finished_at, retained, 0, json.dumps(summary, ensure_ascii=False, sort_keys=True), actual_run_id),
         )
         conn.commit()
 

@@ -216,7 +216,7 @@
   function normalizeItem(item) {
     const text = item.content?.text || "";
     const title = item.content?.title || "";
-    const translationData = item.translation || item.raw_payload?.translation || null;
+    const translationData = isLinkOnly(item.raw_payload?.discord?.content || text) ? null : (item.translation || item.raw_payload?.translation || null);
     const translatedText = typeof translationData === "string"
       ? translationData
       : String(translationData?.text || "");
@@ -952,7 +952,7 @@
         <div class="raw-item-head">
           <div>
             <time datetime="${escapeAttribute(item.createdAt)}">${escapeHtml(formatDisplayTime(item.createdMs, state.timezone))}</time>
-            ${title ? `<h4>${escapeHtml(title)}</h4>` : ""}
+            ${title ? `<h4>${linkifyText(title)}</h4>` : ""}
           </div>
           <div class="raw-item-tags">
             ${isSubstackSummary ? "" : (item.reviewOnly ? `<span class="review-only-tag">仅原文审阅 · 订阅预览</span>` : renderSentiment(item.sentiment))}
@@ -961,16 +961,16 @@
         </div>
         ${renderReplyContext(item.replyContext)}
         ${isSubstackSummary ? renderSubstackSummary(item) : (original ? (longText
-          ? `<div class="raw-original raw-original-preview">${escapeHtml(original.slice(0, 620))}…</div>
+          ? `<div class="raw-original raw-original-preview">${linkifyText(original)}</div>
              <details class="raw-full-details">
                <summary>展开 / 收起完整原文</summary>
-               <div class="raw-original raw-original-full">${escapeHtml(original)}</div>
+               <div class="raw-original raw-original-full">${linkifyText(original)}</div>
              </details>`
-          : `<div class="raw-original raw-original-full">${escapeHtml(original)}</div>`) : "")}
+          : `<div class="raw-original raw-original-full">${linkifyText(original)}</div>`) : "")}
         ${!isSubstackSummary && item.translatedText ? `
           <section class="raw-translation" aria-label="中文翻译">
             <div class="raw-translation-head"><span>中文翻译</span><small>Codex 上下文复核</small></div>
-            <div class="raw-original raw-original-full">${escapeHtml(item.translatedText)}</div>
+            <div class="raw-original raw-original-full">${linkifyText(item.translatedText)}</div>
           </section>` : ""}
         ${isSubstackSummary ? "" : renderStaticImages(item.staticImages, mediaTitle)}
         <div class="raw-item-actions">
@@ -1810,9 +1810,13 @@
     item.externalUrl = detail.item.external?.url || item.externalUrl;
     item.isReply = Boolean(detail.item.relations?.is_reply || detail.item.raw_payload?.reply_context);
     item.replyContext = normalizeReplyContext(detail.item.raw_payload?.reply_context) || item.replyContext;
-    const translation = detail.item.raw_payload?.translation || null;
+    const translation = isLinkOnly(detail.item.raw_payload?.discord?.content || item.text) ? null : (detail.item.raw_payload?.translation || null);
     item.translatedText = typeof translation === "string" ? translation : String(translation?.text || item.translatedText || "");
     item.translatedTitle = typeof translation === "object" ? String(translation?.title || item.translatedTitle || "") : item.translatedTitle;
+    if (isLinkOnly(detail.item.raw_payload?.discord?.content || item.text)) {
+      item.translatedText = "";
+      item.translatedTitle = "";
+    }
   }
 
   function closeDrawer() {
@@ -1829,9 +1833,9 @@
         <p><strong>来源：</strong>${escapeHtml(item.sourceName)} · ${escapeHtml(item.authorDisplay)}</p>
         <p><strong>题材/观点：</strong>${escapeHtml(item.theme)} · ${renderSentiment(item.sentiment)}</p>
         <h4>原文</h4>
-        <div class="quote-block">${escapeHtml(item.text || item.title || "")}</div>
+        <div class="quote-block">${linkifyText(item.text || item.title || "")}</div>
         ${renderReplyContext(item.replyContext)}
-        ${item.translatedText ? `<h4>中文翻译</h4><div class="quote-block translation-block">${escapeHtml(item.translatedText)}</div>` : ""}
+        ${item.translatedText ? `<h4>中文翻译</h4><div class="quote-block translation-block">${linkifyText(item.translatedText)}</div>` : ""}
       </section>
       <section class="detail-block">
         <h3>数据库关联字段</h3>
@@ -2209,6 +2213,31 @@ ${formatPromptItems(relatedItems)}
 
   function escapeRegex(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function isLinkOnly(value) {
+    const text = String(value || "");
+    return /https?:\/\//i.test(text) && !text.replace(/https?:\/\/[^\s<>"']+/gi, "").replace(/[\s<>.,，。;；()（）]/g, "");
+  }
+
+  function linkifyText(value) {
+    const text = String(value || "");
+    const pattern = /https?:\/\/[^\s<>"']+/gi;
+    let result = "", cursor = 0;
+    for (const match of text.matchAll(pattern)) {
+      let url = match[0].replace(/[.,，。!！?？;；:：]+$/u, "");
+      while (url.endsWith(")") && (url.match(/\)/g) || []).length > (url.match(/\(/g) || []).length) url = url.slice(0, -1);
+      result += escapeHtml(text.slice(cursor, match.index));
+      try {
+        const parsed = new URL(url);
+        if (!["https:", "http:"].includes(parsed.protocol)) throw new Error("scheme");
+        result += `<a href="${escapeAttribute(url)}" target="_blank" rel="noopener noreferrer" style="overflow-wrap:anywhere">${escapeHtml(url)}</a>`;
+      } catch {
+        result += escapeHtml(url);
+      }
+      cursor = match.index + url.length;
+    }
+    return result + escapeHtml(text.slice(cursor));
   }
 
   function escapeHtml(value) {
