@@ -39,11 +39,12 @@ async def main(root: Path, profile_dir: Path, headless: bool, wait_seconds: int)
                     # the user has time to complete it, then continue polling.
                     print(json.dumps({"source_id": source, "navigation_warning": str(exc)[:240]}, ensure_ascii=False), flush=True)
                 await page.wait_for_timeout(5000)
-                works = await page.evaluate(EXTRACT.replace('__AUTHOR__', json.dumps(author, ensure_ascii=False)))
+                extractor = (root / 'scripts/douyin_profile_extract.js').read_text()
+                works = await page.evaluate('(' + extractor + ')', {'authorName': author, 'profileUrl': url})
                 waited = 0
                 while not works and waited < wait_seconds:
                     await page.wait_for_timeout(5000); waited += 5
-                    works = await page.evaluate(EXTRACT.replace('__AUTHOR__', json.dumps(author, ensure_ascii=False)))
+                    works = await page.evaluate('(' + extractor + ')', {'authorName': author, 'profileUrl': url})
                 if not works: raise RuntimeError(f"{source}: no work cards rendered (login/session unavailable)")
                 path=root/"data/browser_sessions"/(source+".jsonl"); path.parent.mkdir(parents=True,exist_ok=True)
                 path.write_text(json.dumps({"author":author,"works":works},ensure_ascii=False),encoding="utf-8")

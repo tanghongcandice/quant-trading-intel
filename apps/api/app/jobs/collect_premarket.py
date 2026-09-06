@@ -37,6 +37,27 @@ def _extract_summary(stdout: str) -> dict[str, Any]:
     return {"stdout": text}
 
 
+def _requires_codex_review(doc: dict[str, Any]) -> bool:
+    """Return true only for a newly collected Discord item needing translation."""
+    source = doc.get("source") or {}
+    if source.get("type") != "discord":
+        return False
+    # Old scheduler-state records may be emitted only in explicit duplicate
+    # modes. They are never new work for the translation queue.
+    if (doc.get("ingestion") or {}).get("is_new") is False:
+        return False
+    if is_link_only(doc):
+        return False
+    text = (doc.get("content") or {}).get("text") or ""
+    translation = (doc.get("raw_payload") or {}).get("translation") or {}
+    translated_text = translation.get("text") if isinstance(translation, dict) else translation
+    return (
+        len(re.findall("[A-Za-z]", text)) >= 4
+        and not re.search("[\u4e00-\u9fff]", text)
+        and not translated_text
+    )
+
+
 def run_collection(
     *,
     db_path: Path | None = None,
@@ -87,24 +108,13 @@ def run_collection(
     pending_review = []
     if not dry_run and items_path.exists():
         docs = [json.loads(line) for line in items_path.read_text().splitlines() if line.strip()]
-        blocked_sources = set()
-        for doc in docs:
-            source = doc.get('source') or {}
-            if source.get('type') != 'discord':
-                continue
-            text = (doc.get('content') or {}).get('text') or ''
-            raw = doc.get('raw_payload') or {}
-            translation = raw.get('translation') or {}
-            if is_link_only(doc):
-                continue
-            if len(re.findall('[A-Za-z]', text)) >= 4 and not re.search('[\u4e00-\u9fff]', text) and not (translation.get('text') if isinstance(translation, dict) else translation):
-                blocked_sources.add(source['id'])
-        pending_review = [doc for doc in docs if (doc.get('source') or {}).get('id') in blocked_sources]
+        pending_review = [doc for doc in docs if _requires_codex_review(doc)]
         if pending_review:
             pending_path = items_path.with_name('pending_codex_review.jsonl')
             pending_path.write_text(''.join(json.dumps(d, ensure_ascii=False) + '\n' for d in pending_review))
             ready_path = items_path.with_name('ready_to_import.jsonl')
-            ready_path.write_text(''.join(json.dumps(d, ensure_ascii=False) + '\n' for d in docs if (d.get('source') or {}).get('id') not in blocked_sources))
+            pending_ids = {id(doc) for doc in pending_review}
+            ready_path.write_text(''.join(json.dumps(d, ensure_ascii=False) + '\n' for d in docs if id(d) not in pending_ids))
             items_path = ready_path
         import_stats = import_jsonl(
             settings.db_path,

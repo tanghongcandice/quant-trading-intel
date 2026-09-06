@@ -53,6 +53,52 @@ def config_base_dir(config: dict[str, Any], config_path: Path) -> Path:
     return resolve_path(base_value, config_path.parent)
 
 
+def _cursor_eligible(item: dict[str, Any], source: dict[str, Any]) -> bool:
+    """Exclude Discord context-only authors from successful watermarks."""
+    if source.get("type") != "discord":
+        return True
+    targets = [str(value).strip().casefold() for value in source.get("target_authors") or [] if str(value).strip()]
+    if not targets:
+        return True
+    author = item.get("author") or {}
+    raw_author = ((item.get("raw_payload") or {}).get("discord") or {}).get("author") or {}
+    values = [
+        author.get("handle"), author.get("display_name"),
+        raw_author.get("name"), raw_author.get("displayName"),
+    ]
+    normalized = [str(value).strip().casefold() for value in values if str(value or "").strip()]
+    return any(target in value for target in targets for value in normalized)
+
+
+def _advance_main_cursor(db_path: Path, source_id: str, item: dict[str, Any], run_id: str) -> None:
+    """Mirror successful collection coverage into the final-store cursor."""
+    created = str((item.get("timestamps") or {}).get("created_at") or "")
+    if not created or not db_path.exists():
+        return
+    external_id = (item.get("external") or {}).get("id")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS source_cursors (
+            source_id TEXT PRIMARY KEY,
+            last_successful_created_at TEXT,
+            last_successful_external_id TEXT,
+            updated_at TEXT NOT NULL,
+            run_id TEXT NOT NULL
+        )""")
+        current = conn.execute(
+            "SELECT last_successful_created_at FROM source_cursors WHERE source_id = ?", (source_id,)
+        ).fetchone()
+        if current and (current[0] or "") >= created:
+            return
+        conn.execute(
+            """INSERT INTO source_cursors(source_id,last_successful_created_at,last_successful_external_id,updated_at,run_id)
+               VALUES(?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET
+               last_successful_created_at=excluded.last_successful_created_at,
+               last_successful_external_id=excluded.last_successful_external_id,
+               updated_at=excluded.updated_at, run_id=excluded.run_id""",
+            (source_id, created, external_id, utc_now_iso(), run_id),
+        )
+
+
 def select_sources(
     config: dict[str, Any],
     *,
@@ -213,14 +259,6 @@ def _run_source(
             # window.  The complete browser snapshot remains in artifacts;
             # this only controls which records are candidates for this run.
             cursor = state.get_cursor(source_id)
-            imported_ids = None
-            main_db = context.base_dir / 'data' / 'quant_intel.sqlite'
-            if source_type == 'discord' and main_db.exists():
-                with sqlite3.connect(f'file:{main_db}?mode=ro', uri=True) as db:
-                    db.row_factory = sqlite3.Row
-                    row = db.execute('SELECT * FROM source_cursors WHERE source_id=?', (source_id,)).fetchone()
-                    cursor = dict(row) if row else None
-                    imported_ids = {str(r[0]) for r in db.execute('SELECT external_id FROM information_items WHERE source_id=?', (source_id,))}
             cutoff = None
             if cursor and cursor.get("last_successful_created_at"):
                 try:
@@ -278,7 +316,11 @@ def _run_source(
                         new_count += 1
                     else:
                         duplicate_count += 1
-                    if inserted or include_duplicates or (imported_ids is not None and str((item.get('external') or {}).get('id')) not in imported_ids):
+                    # Scheduler state records what was successfully collected,
+                    # independently of whether the final-store Discord guard
+                    # later retained this source's copy. A cross-source mirror
+                    # removed from the main DB must not be emitted as new again.
+                    if inserted or include_duplicates:
                         emitted_docs.append(item)
                 append_jsonl(items_path, emitted_docs)
 
@@ -286,7 +328,10 @@ def _run_source(
             # all candidate items were persisted.  Never derive this from the
             # snapshot filename/order or move it backwards.
             if not dry_run and candidate_items:
-                dated = [i for i in candidate_items if (i.get("timestamps") or {}).get("created_at")]
+                dated = [
+                    i for i in candidate_items
+                    if (i.get("timestamps") or {}).get("created_at") and _cursor_eligible(i, source)
+                ]
                 if dated:
                     latest = max(dated, key=lambda i: str((i.get("timestamps") or {}).get("created_at")))
                     state.advance_cursor(
@@ -295,6 +340,13 @@ def _run_source(
                         (latest.get("external") or {}).get("id"),
                         context.run_id,
                     )
+                    if source_type == "discord":
+                        _advance_main_cursor(
+                            context.base_dir / "data" / "quant_intel.sqlite",
+                            source_id,
+                            latest,
+                            context.run_id,
+                        )
 
             item_count = len(result.items)
             state.finish_source(

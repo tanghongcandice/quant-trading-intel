@@ -955,7 +955,7 @@
             ${title ? `<h4>${linkifyText(title)}</h4>` : ""}
           </div>
           <div class="raw-item-tags">
-            ${isSubstackSummary ? "" : (item.reviewOnly ? `<span class="review-only-tag">仅原文审阅 · 订阅预览</span>` : renderSentiment(item.sentiment))}
+            ${isSubstackSummary ? "" : (item.reviewOnly ? `<span class="review-only-tag">${/无可转录音轨|未检测到可靠财经口播|转录待补全/.test(item.text || "") ? "转录待补全" : "仅原文审阅 · 订阅预览"}</span>` : renderSentiment(item.sentiment))}
             ${item.reviewOnly ? "" : item.tickers.slice(0, 4).map((ticker) => `<span class="tag">${escapeHtml(ticker)}</span>`).join("")}
           </div>
         </div>

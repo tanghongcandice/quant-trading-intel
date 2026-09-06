@@ -65,6 +65,8 @@ def build_item(
     profile_url: str,
 ) -> dict:
     aweme_id = str(work["aweme_id"])
+    if source_id == 'douyin_panyiyoudianshen' and not (work.get('ownership_verified') and work.get('profile_url') == profile_url):
+        raise ValueError('Unverified Panyi profile work: ' + aweme_id)
     title = str(work.get("title") or "").strip()
     metadata_entry = metadata.get(aweme_id)
     metadata_access_label = restricted_access_label(metadata_entry[1]) if metadata_entry else None
@@ -166,6 +168,7 @@ def build_item(
             "market": "cn",
             "comments_collected": False,
             "profile_snapshot": True,
+            "ownership": {"verified": bool(work.get('ownership_verified')), "profile_url": work.get('profile_url'), "method": "rendered_user_post_list"},
             "access_label": work.get("access_label") or metadata_access_label,
             "metadata_path": str(metadata_path.resolve()) if metadata_path else None,
             "audio_path": str(media_path.resolve()) if media_path else None,

@@ -1,9 +1,10 @@
 // Run this function in an already signed-in Douyin profile page.
 // It reads only rendered work cards and never accesses cookies or browser storage.
-async ({ authorName = "久韭究财" } = {}) => {
+async ({ authorName = "久韭究财", profileUrl = location.origin + location.pathname } = {}) => {
+  if (location.pathname !== new URL(profileUrl).pathname || document.querySelector('h1')?.innerText.trim() !== authorName) throw new Error('Douyin profile identity mismatch');
   const seen = new Set();
   const works = [];
-  const links = Array.from(document.querySelectorAll('a[href^="/video/"]'))
+  const links = Array.from(document.querySelectorAll('[data-e2e="user-post-list"] a[href^="/video/"]'))
     .filter((link) => !link.closest("footer"));
 
   for (const link of links) {
@@ -18,6 +19,7 @@ async ({ authorName = "久韭究财" } = {}) => {
       .filter(Boolean)
       .pop();
     const imageAlt = link.querySelector("img[alt]")?.getAttribute("alt") || "";
+    if (!imageAlt.startsWith(authorName + '：')) continue;
     const title = paragraphText
       || imageAlt.replace(new RegExp(`^${authorName}：?`), "").trim()
       || cardText;
@@ -37,6 +39,8 @@ async ({ authorName = "久韭究财" } = {}) => {
       aweme_id: awemeId,
       url: `https://www.douyin.com/video/${awemeId}`,
       author: authorName,
+      profile_url: profileUrl,
+      ownership_verified: true,
       title,
       review_only: reviewOnly,
       access_label: reviewOnly ? (badgeText.match(accessPattern)?.[1] || "付费内容") : null,

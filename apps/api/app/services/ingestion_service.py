@@ -111,6 +111,10 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             ),
         )
         for item in items:
+            if (item.get('source') or {}).get('id') == 'douyin_panyiyoudianshen':
+                ownership = (item.get('raw_payload') or {}).get('ownership') or {}
+                if not ownership.get('verified') or ownership.get('profile_url') != 'https://www.douyin.com/user/MS4wLjABAAAAiZFYelCAfbPcGXxkCEZEOpJPi-Fo_frPHiaEA45UerKIM-XTAXssDViEHNRu_bH2':
+                    raise ValueError('Panyi import requires verified profile ownership')
             if discord_source_id(item) in SOURCES and not target(item):
                 item.setdefault('raw_payload', {}).update(analysis_role='reply_context_only', analysis_policy={'include':False,'mode':'context_only'})
                 item['entities'] = []

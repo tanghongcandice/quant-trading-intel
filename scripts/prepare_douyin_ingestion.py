@@ -26,8 +26,8 @@ PROFILES = {
         "snapshot": "data/browser_sessions/douyin_panyiyoudianshen.jsonl",
         "output": "data/douyin_built/panyiyoudianshen.jsonl",
         "author_name": "潘姨有点神",
-        "author_external_id": "",
-        "profile_url": "https://www.douyin.com/",
+        "author_external_id": "MS4wLjABAAAAiZFYelCAfbPcGXxkCEZEOpJPi-Fo_frPHiaEA45UerKIM-XTAXssDViEHNRu_bH2",
+        "profile_url": "https://www.douyin.com/user/MS4wLjABAAAAiZFYelCAfbPcGXxkCEZEOpJPi-Fo_frPHiaEA45UerKIM-XTAXssDViEHNRu_bH2",
     },
 }
 
@@ -99,6 +99,16 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     cfg = PROFILES[source_id]
     snapshot_path = root / cfg["snapshot"]
     output_path = root / cfg["output"]
+    if source_id == 'douyin_panyiyoudianshen':
+        # The hourly, reviewed queue owns this source, including retries.
+        # Never let the five-times-daily job bypass its shared batch budget.
+        state_file = root / 'data/panyi_backfill_state.json'
+        batch_state = json.loads(state_file.read_text()) if state_file.exists() else {}
+        if not batch_state.get('completed') or __import__('time').time() < batch_state.get('next_allowed_at', 0):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text('', encoding='utf-8')
+            return {'source_id': source_id, 'status': 'ready', 'candidate_items': 0,
+                    'collection_mode': 'hourly_reviewed_queue', 'output': str(output_path)}
     if not snapshot_path.exists():
         if allow_missing:
             return {"source_id": source_id, "status": "missing"}
@@ -112,6 +122,8 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     snapshot_count = len(payload["works"])
     cutoff = _cursor_cutoff(root, source_id)
     for work in payload["works"]:
+        if source_id == 'douyin_panyiyoudianshen' and not (work.get('ownership_verified') and work.get('profile_url') == cfg['profile_url']):
+            continue
         if not work.get("pinned"):
             row = dict(work)
             # ``no_audio`` is a legacy marker from browser-only captures.  It
@@ -137,6 +149,13 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
                 except (TypeError, ValueError):
                     pass
             works.append(row)
+    if source_id == 'douyin_panyiyoudianshen':
+        with sqlite3.connect(root / 'data/quant_intel.sqlite') as conn:
+            known = {r[0] for r in conn.execute('SELECT external_id FROM information_items WHERE source_id=?', (source_id,))}
+        works = [w for w in works if str(w['aweme_id']) not in known and (int(w['aweme_id']) >> 32) >= 1777219200][:min(20, batch_state.get('batch_size',20))]
+        if works:
+            batch_state['next_allowed_at'] = __import__('time').time() + batch_state.get('interval_seconds',3600)
+            state_file.write_text(json.dumps(batch_state))
     # A rendered badge is the first guard. Existing public detail metadata is
     # the second guard and wins over a false-negative browser snapshot.
     _apply_metadata_access_guard(root, works)
