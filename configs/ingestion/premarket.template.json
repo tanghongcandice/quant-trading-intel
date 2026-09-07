@@ -10,6 +10,20 @@
   },
   "sources": [
     {
+      "id": "douyin_group_yuboluo_1",
+      "type": "douyin",
+      "enabled": true,
+      "name": "抖音群聊 宇菠萝的认知圈1群",
+      "mode": "browser_session",
+      "browser_snapshot": "data/douyin_built/yuboluo_group_1.jsonl",
+      "tags": [
+        "market:cn",
+        "douyin",
+        "group_chat"
+      ],
+      "max_snapshot_age_hours": 24
+    },
+    {
       "id": "douyin_jiujiujiucai",
       "type": "douyin",
       "enabled": true,

@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.db import connect
 from app.services.link_policy import suppress_link_translation
+from app.services.subscription_policy import enforce_subscription_policy
 from app.services.discord_guard import enforce, target, sid as discord_source_id, SOURCES
 
 
@@ -75,7 +76,20 @@ def entity_records(item: dict[str, Any]) -> list[tuple]:
 def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mode: str = "manual_import") -> dict[str, Any]:
     items = read_jsonl(jsonl_path)
     for item in items:
+        if (item.get('source') or {}).get('id') == 'douyin_group_yuboluo_1':
+            payload = item.get('raw_payload') or {}
+            parts = payload.get('message_parts') or []
+            if payload.get('sender_role') not in {'群主', '管理员'} or not parts or any(p.get('sender_role') not in {'群主', '管理员'} for p in parts):
+                raise ValueError('Douyin group import requires verified owner/admin role for every message part')
+            if any(p.get('message_kind') == 'system_notice' or p.get('body', '').strip() == '我发布了新作品，快来看看！' for p in parts):
+                raise ValueError('Douyin group system notices must not be imported')
+            for part in parts:
+                if part.get('message_kind') == 'video_share':
+                    video_url = (part.get('shared_video') or {}).get('url')
+                    if not video_url or (item.get('external') or {}).get('url') != video_url:
+                        raise ValueError('Douyin group video share requires its video URL')
         suppress_link_translation(item)
+        enforce_subscription_policy(item)
     actual_run_id = run_id or "run_import_" + utc_now_iso().replace("-", "").replace(":", "").replace("Z", "Z")
     started_at = utc_now_iso()
     inserted = 0

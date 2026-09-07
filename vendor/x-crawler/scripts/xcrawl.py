@@ -71,6 +71,10 @@ EXTRACT_TWEETS_JS = r"""
   const social = article.querySelector('[data-testid="socialContext"]');
   const socialText = social ? String(social.innerText || '') : '';
   const replyText = String(article.innerText || '').slice(0, 500);
+  // Require a paywall-specific message, never an ellipsis or profile Subscribe CTA.
+  const subscriptionEvidence = String(article.innerText || '').match(
+    /(?:Subscribe to (?:read|see|view|unlock)|Only (?:subscribers|Subscribers) can|订阅(?:以|后)(?:查看|阅读)|仅(?:限)?订阅者(?:可见|可查看))/i
+  );
 
   const links = textNode ? Array.from(textNode.querySelectorAll('a[href]'))
     .map(a => abs(a.getAttribute('href'))).filter(Boolean) : [];
@@ -88,6 +92,8 @@ EXTRACT_TWEETS_JS = r"""
   return {
     id,
     id_str: id,
+    subscription_preview: Boolean(subscriptionEvidence),
+    subscription_evidence: subscriptionEvidence ? subscriptionEvidence[0] : null,
     url: abs(href),
     date: time ? time.getAttribute('datetime') : null,
     rawContent: textNode ? String(textNode.innerText || '').trim() : '',

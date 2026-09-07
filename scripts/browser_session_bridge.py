@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 SOURCES = {
+    "douyin_group_yuboluo_1": ("douyin_group", "douyin_group_yuboluo_1.json"),
     "x_haochihaochiaaa": ("x", "x_haochihaochiaaa.json"),
     "x_aleabitoreddit": ("x", "x_aleabitoreddit.json"),
     "x_edgerunner17888": ("x", "x_edgerunner17888.json"),
@@ -35,7 +36,10 @@ def _validate(source_id: str, payload: Any) -> Any:
     if source_id not in SOURCES:
         raise ValueError(f"unknown source_id: {source_id}")
     kind, _ = SOURCES[source_id]
-    if kind == "discord":
+    if kind == "douyin_group":
+        if not isinstance(payload, dict) or payload.get("group_name") != "宇菠萝的认知圈1群" or not isinstance(payload.get("messages"), list):
+            raise ValueError("Expected the authorized group and a messages list")
+    elif kind == "discord":
         if isinstance(payload, list):
             payload = {"messages": payload}
         if not isinstance(payload, dict):
@@ -79,7 +83,10 @@ class Handler(BaseHTTPRequestHandler):
         source_id = urlparse(self.path).path.removeprefix("/capture/").strip("/")
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            payload = _validate(source_id, json.loads(self.rfile.read(length)))
+            raw = self.rfile.read(length).decode("utf-8")
+            if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+                raw = parse_qs(raw)["payload"][0]
+            payload = _validate(source_id, json.loads(raw))
             path = self.root / "data" / "browser_sessions" / SOURCES[source_id][1]
             _write_atomic(path, payload)
             body = json.dumps({"ok": True, "source_id": source_id, "path": str(path), "count": len(payload if isinstance(payload, list) else payload.get("messages", payload.get("items", payload.get("works", []))))}, ensure_ascii=False).encode()
@@ -95,6 +102,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         """Small GET fallback for browser sandboxes that disallow fetch/POST."""
         parsed = urlparse(self.path)
+        if parsed.path == "/group-import":
+            body = ('<!doctype html><meta charset="utf-8"><title>群聊本地导入</title>'
+                    '<h1>宇菠萝的认知圈1群 · 本地采集快照</h1>'
+                    '<form method="post" action="/capture/douyin_group_yuboluo_1">'
+                    '<label>群聊快照 JSON<textarea name="payload" rows="20" cols="100"></textarea></label>'
+                    '<button type="submit">保存到本地项目</button></form>').encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         source_id = parsed.path.removeprefix("/capture/").strip("/")
         try:
             raw = parse_qs(parsed.query).get("data", [None])[0]

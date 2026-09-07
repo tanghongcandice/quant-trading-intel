@@ -90,7 +90,7 @@ PYTHONPATH=. python3 -m app.jobs.collect_premarket --dry-run
 真实采集需要网络权限和已授权的登录状态，确认后再去掉 `--dry-run`。三个 X 来源使用上一版 `x-crawler` helper，通过包装器输出 JSONL；helper 默认入口为：
 
 ```text
-~/.codex/skills/x-crawler/scripts/xcrawl.py
+vendor/x-crawler/scripts/xcrawl.py
 ```
 
 入口不在默认位置时，只需为采集服务设置路径，不要复制 Cookie、Token 或密码：

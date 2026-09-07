@@ -58,6 +58,7 @@
     sentiment: "",
     query: "",
     reviewStartDate: "",
+    reviewRangeSelected: false,
     reviewEndDate: "",
     reviewGroup: "date",
     reviewSort: "desc",
@@ -126,7 +127,7 @@
     initImageLightbox();
     await loadItems();
     fillFilterOptions();
-    fillReviewDateRange();
+    fillReviewDateRange(state.reviewRangeSelected);
     render();
   }
 
@@ -501,6 +502,7 @@
     els.reviewStartDate.addEventListener("change", applyReviewRange);
     els.reviewEndDate.addEventListener("change", applyReviewRange);
     els.clearReviewRange.addEventListener("click", () => {
+      state.reviewRangeSelected = true;
       state.reviewStartDate = "";
       state.reviewEndDate = "";
       els.reviewStartDate.value = "";
@@ -672,7 +674,7 @@
     els.reviewStartDate.max = latest;
     els.reviewEndDate.min = earliest;
     els.reviewEndDate.max = latest;
-    if (!preserveRange || !state.reviewStartDate || !state.reviewEndDate) {
+    if (!preserveRange) {
       state.reviewStartDate = latest;
       state.reviewEndDate = latest;
     }
@@ -681,6 +683,7 @@
   }
 
   function applyReviewRange() {
+    state.reviewRangeSelected = true;
     let start = els.reviewStartDate.value;
     let end = els.reviewEndDate.value;
     if (start && end && start > end) [start, end] = [end, start];
@@ -779,6 +782,11 @@
           <span class="source-platform douyin">抖音</span>
           <strong>潘姨有点神</strong>
           <small>已接入 · 视频 → 转写 → 分析</small>
+        </article>
+        <article class="source-ready-card">
+          <span class="source-platform douyin">抖音群聊</span>
+          <strong>宇菠萝的认知圈1群</strong>
+          <small>仅群主 / 管理员 · 语音按语义合并 · 早期历史待补</small>
         </article>
         <article class="source-ready-card">
           <span class="source-platform wechat">公众号</span>
@@ -955,7 +963,7 @@
             ${title ? `<h4>${linkifyText(title)}</h4>` : ""}
           </div>
           <div class="raw-item-tags">
-            ${isSubstackSummary ? "" : (item.reviewOnly ? `<span class="review-only-tag">${/无可转录音轨|未检测到可靠财经口播|转录待补全/.test(item.text || "") ? "转录待补全" : "仅原文审阅 · 订阅预览"}</span>` : renderSentiment(item.sentiment))}
+            ${isSubstackSummary ? "" : (item.reviewOnly ? `<span class="review-only-tag">${item.sourceId === "douyin_group_yuboluo_1" ? "群聊原文 · 不参与分析" : (/无可转录音轨|未检测到可靠财经口播|转录待补全/.test(item.text || "") ? "转录待补全" : "仅原文审阅 · 订阅预览")}</span>` : renderSentiment(item.sentiment))}
             ${item.reviewOnly ? "" : item.tickers.slice(0, 4).map((ticker) => `<span class="tag">${escapeHtml(ticker)}</span>`).join("")}
           </div>
         </div>
@@ -2069,6 +2077,7 @@ ${formatPromptItems(relatedItems)}
   }
 
   function sourceDisplayName(sourceId, sourceType) {
+    if (sourceId === "douyin_group_yuboluo_1") return "群聊 宇菠萝的认知圈1群";
     const name = sourceLabel(sourceId);
     const channel = channelLabel(sourceType);
     return name.replace(new RegExp(`^${channel}\\s+`, "i"), "").trim() || name;

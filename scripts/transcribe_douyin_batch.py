@@ -5,6 +5,7 @@ import json
 import subprocess
 import tempfile
 import urllib.request
+import urllib.error
 import wave
 import os
 from pathlib import Path
@@ -44,7 +45,7 @@ def audio_urls(metadata: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(url for _, url in candidates))
 
 
-def download_playback_audio(metadata: dict[str, Any], destination: Path) -> Path | None:
+def download_playback_audio(metadata: dict[str, Any], destination: Path, stop_on_http_error: bool = False) -> Path | None:
     if destination.exists() and destination.stat().st_size > 1024:
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -63,16 +64,20 @@ def download_playback_audio(metadata: dict[str, Any], destination: Path) -> Path
                 continue
             temporary.replace(destination)
             return destination
+        except urllib.error.HTTPError as exc:
+            temporary.unlink(missing_ok=True)
+            if stop_on_http_error:
+                raise RuntimeError(f"audio_http_error status={exc.code}; Retry-After={exc.headers.get('Retry-After', '')}") from None
         except Exception:
             temporary.unlink(missing_ok=True)
     return None
 
 
-def speech_source(metadata_path: Path, metadata: dict[str, Any], prepared_dir: Path, media_root: Path | None = None) -> Path:
+def speech_source(metadata_path: Path, metadata: dict[str, Any], prepared_dir: Path, media_root: Path | None = None, stop_on_http_error: bool = False) -> Path:
     aweme_id = str(metadata.get("aweme_id") or "")
     if not aweme_id:
         raise ValueError(f"missing aweme_id in {metadata_path}")
-    playback_audio = download_playback_audio(metadata, prepared_dir / f"{aweme_id}_speech_audio.m4a")
+    playback_audio = download_playback_audio(metadata, prepared_dir / f"{aweme_id}_speech_audio.m4a", stop_on_http_error)
     if playback_audio:
         return playback_audio
     # Older metadata often has no bit_rate_audio field. In that case use the
@@ -121,6 +126,7 @@ def main() -> None:
     parser.add_argument("--author-name", default="久韭究财")
     parser.add_argument("--ids", nargs="*")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--stop-on-http-error", action="store_true", help="Stop the batch at the first audio HTTP error; no URL fallback")
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prepared_dir = args.prepared_dir or args.output_dir / "prepared_audio"
@@ -141,7 +147,7 @@ def main() -> None:
             print(f"[{index}/{len(jobs)}] skip {aweme_id}", flush=True)
             continue
         try:
-            source = speech_source(metadata_path, metadata, prepared_dir, args.media_root)
+            source = speech_source(metadata_path, metadata, prepared_dir, args.media_root, args.stop_on_http_error)
         except FileNotFoundError as exc:
             # A missing playback track is an expected per-video condition
             # (e.g. older/private cards).  Leave it for the title-only
