@@ -95,6 +95,28 @@ def _apply_metadata_access_guard(root: Path, works: list[dict]) -> None:
             row["access_label"] = label
 
 
+def _known_external_ids(root: Path, source_id: str) -> set[str]:
+    known: set[str] = set()
+    for db, table in (
+        (root / "data" / "quant_intel.sqlite", "information_items"),
+        (root / "data" / "premarket_state.sqlite", "items"),
+    ):
+        if not db.exists():
+            continue
+        with sqlite3.connect(db) as conn:
+            try:
+                known.update(
+                    str(row[0])
+                    for row in conn.execute(
+                        f"SELECT external_id FROM {table} WHERE source_id = ? AND external_id IS NOT NULL",
+                        (source_id,),
+                    )
+                )
+            except sqlite3.OperationalError:
+                continue
+    return known
+
+
 def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     cfg = PROFILES[source_id]
     snapshot_path = root / cfg["snapshot"]
@@ -159,6 +181,16 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     # A rendered badge is the first guard. Existing public detail metadata is
     # the second guard and wins over a false-negative browser snapshot.
     _apply_metadata_access_guard(root, works)
+    known_ids = _known_external_ids(root, source_id)
+    # Discovery keeps the full two-hour overlap for cursor/dedupe auditing, but
+    # expensive downloader/Whisper work is only allowed for IDs absent from the
+    # final store. Existing records remain in ``works`` so the scheduler can
+    # still verify them as duplicates and detect metadata/access changes.
+    enrichment_ids = sorted(
+        str(work.get("aweme_id"))
+        for work in works
+        if work.get("aweme_id") and str(work.get("aweme_id")) not in known_ids and not work.get("review_only")
+    )
     normalized = {"author": payload.get("author") or cfg["author_name"], "works": works}
     temp = root / "runs" / f".{source_id}.normalized.json"
     temp.parent.mkdir(parents=True, exist_ok=True)
@@ -172,12 +204,12 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     if project_python.exists():
         sys.executable = str(project_python)
     enrich = root / "scripts" / "enrich_douyin_audio.py"
-    if enrich.exists():
+    if enrich.exists() and enrichment_ids:
         subprocess.run([sys.executable, str(enrich), "--snapshot", str(temp),
                         "--metadata-root", str(root / "data" / "douyin_metadata"),
                         "--whisper-dir", str(root / "data" / "whisper"),
                         "--media-dir", str(root / "data" / "douyin_media"),
-                        "--author-name", cfg["author_name"]], cwd=str(root),
+                        "--author-name", cfg["author_name"], "--ids", *enrichment_ids], cwd=str(root),
                        env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         transcribe = root / "scripts" / "transcribe_douyin_batch.py"
         subprocess.run([sys.executable, str(transcribe), "--metadata-root",
@@ -185,7 +217,7 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
                         str(root / "data" / "whisper"), "--prepared-dir",
                         str(root / "data" / "whisper" / "prepared_audio"),
                         "--media-root", str(root / "data" / "douyin_media"),
-                        "--author-name", cfg["author_name"]], cwd=str(root),
+                        "--author-name", cfg["author_name"], "--ids", *enrichment_ids], cwd=str(root),
                        env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     # Keep the standard builder total: an individual failed download is
     # represented as title-only, while successful video/audio jobs use ASR.
@@ -232,6 +264,7 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     freshness = "stale_snapshot" if cutoff and (not snapshot_latest or snapshot_latest <= (cutoff + timedelta(hours=2)).isoformat()) else "ready"
     return {"source_id": source_id, "status": freshness, "snapshot_items": snapshot_count,
             "candidate_items": len(works), "cursor_cutoff": cutoff.isoformat() if cutoff else None,
+            "enrichment_items": len(enrichment_ids), "reused_processed_items": len(works) - len(enrichment_ids),
             "snapshot_latest": snapshot_latest,
             "output": str(output_path)}
 

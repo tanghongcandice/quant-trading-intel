@@ -21,7 +21,8 @@
         "douyin",
         "group_chat"
       ],
-      "max_snapshot_age_hours": 24
+      "max_snapshot_age_hours": 2,
+      "require_run_capture": true
     },
     {
       "id": "douyin_jiujiujiucai",

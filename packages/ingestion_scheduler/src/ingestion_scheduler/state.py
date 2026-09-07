@@ -89,6 +89,26 @@ class StateStore:
         row = self.conn.execute("SELECT * FROM source_cursors WHERE source_id = ?", (source_id,)).fetchone()
         return dict(row) if row else None
 
+    def get_processed_item(self, source_id: str, external_id: str) -> dict[str, Any] | None:
+        """Return the last successfully normalized item for early work reuse."""
+        if not source_id or not external_id:
+            return None
+        row = self.conn.execute(
+            """SELECT item_id, content_hash, last_seen_at, raw_item_json
+               FROM items WHERE source_id = ? AND external_id = ?
+               ORDER BY last_seen_at DESC LIMIT 1""",
+            (source_id, external_id),
+        ).fetchone()
+        if not row:
+            return None
+        try:
+            item = json.loads(row["raw_item_json"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        item.setdefault("ingestion", {})["ledger_item_id"] = row["item_id"]
+        item["ingestion"]["ledger_last_seen_at"] = row["last_seen_at"]
+        return item
+
     def advance_cursor(self, source_id: str, created_at: str | None, external_id: str | None, run_id: str) -> None:
         if not created_at:
             return

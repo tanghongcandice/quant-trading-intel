@@ -165,6 +165,10 @@ class DiscordAdapter(SourceAdapter):
     ) -> AdapterResult:
         filtered = self._filter_docs(source, docs)
         items = [self._normalize_message(source, context, doc) for doc in filtered]
+        reused = sum(
+            ((item.get("raw_payload") or {}).get("processing_ledger") or {}).get("media") == "reused"
+            for item in items
+        )
         return AdapterResult(
             source_id=source["id"],
             source_type=self.source_type,
@@ -175,6 +179,7 @@ class DiscordAdapter(SourceAdapter):
                 "raw_count": len(docs),
                 "filtered_count": len(filtered),
                 "normalized_count": len(items),
+                "reused_processed_items": reused,
                 "snapshot_latest": max((str((doc or {}).get("timestamp") or "") for doc in docs), default=None),
                 "collected_at": context.collected_at,
             },
@@ -284,10 +289,28 @@ class DiscordAdapter(SourceAdapter):
                 "available": not bool(ref.get("unavailable")),
             }
 
+        previous = context.processed_item(source["id"], str(message_id)) if message_id and context.processed_item else None
+        previous_payload = (previous or {}).get("raw_payload") or {}
+        previous_images = (previous_payload.get("media") or {}).get("static_images") or []
+        reusable_images = [image for image in previous_images if self._saved_image_exists(image)]
+        candidates = discord_image_candidates(data)
+        unchanged = (
+            bool(previous)
+            and str(((previous.get("content") or {}).get("text") or "")) == str(content or "")
+            and str(((previous.get("relations") or {}).get("parent_external_id") or "")) == str(parent_id or "")
+        )
+
         static_images: list[dict[str, Any]] = []
-        if message_id:
+        reused_media = False
+        if unchanged and len(reusable_images) == len(candidates):
+            # The freshly exported Discord payload still carries refreshed
+            # signed attachment URLs; only the already validated local bodies
+            # are reused here.
+            static_images = reusable_images
+            reused_media = True
+        elif message_id:
             static_images = download_static_images(
-                discord_image_candidates(data),
+                candidates,
                 media_root=context.base_dir / "data" / "media",
                 source_id=source["id"],
                 external_id=str(message_id),
@@ -337,6 +360,11 @@ class DiscordAdapter(SourceAdapter):
                 "target_authors": source.get("target_authors") or [],
                 "reply_context": reply_context,
                 "media": {"static_images": static_images},
+                "processing_ledger": {
+                    "status": "unchanged" if unchanged else ("changed" if previous else "new"),
+                    "media": "reused" if reused_media else "refreshed",
+                    "ledger_item_id": ((previous or {}).get("ingestion") or {}).get("ledger_item_id"),
+                },
                 **({"translation": data.get("translation")} if data.get("translation") else {}),
                 **(
                     {
@@ -348,6 +376,14 @@ class DiscordAdapter(SourceAdapter):
                 ),
             },
         )
+
+    @staticmethod
+    def _saved_image_exists(image: dict[str, Any]) -> bool:
+        path = Path(str(image.get("local_path") or ""))
+        try:
+            return path.is_file() and path.stat().st_size == int(image.get("bytes") or 0) > 0
+        except (OSError, TypeError, ValueError):
+            return False
 
     def _author_display_name(self, author: dict[str, Any], data: dict[str, Any]) -> str | None:
         return (

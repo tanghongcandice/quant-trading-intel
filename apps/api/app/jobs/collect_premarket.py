@@ -92,7 +92,8 @@ def run_collection(
         text=True,
         check=False,
     )
-    if completed.returncode != 0:
+    summary = _extract_summary(completed.stdout)
+    if completed.returncode != 0 and not summary.get('items_path'):
         return {
             "status": "scheduler_failed",
             "returncode": completed.returncode,
@@ -102,7 +103,6 @@ def run_collection(
             "config": str(config),
         }
 
-    summary = _extract_summary(completed.stdout)
     items_path = Path(summary.get("items_path") or "")
     import_stats = None
     pending_review = []

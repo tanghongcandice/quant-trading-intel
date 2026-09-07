@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 
 from .base import AdapterContext, AdapterResult, SourceAdapter
@@ -21,6 +22,18 @@ class DouyinAdapter(SourceAdapter):
             if not path.exists():
                 raise RuntimeError(f"Douyin browser page data missing: {path}; run douyin_profile_extract.js in the signed-in profile page first")
             text = path.read_text(encoding="utf-8").strip()
+            if source.get('require_run_capture') and not context.dry_run:
+                receipt_path = context.run_dir / 'group_receipt.json'
+                if not receipt_path.exists():
+                    raise RuntimeError('Group not refreshed for this run: browser capture/voice transcription receipt missing; old snapshot refused')
+                receipt = json.loads(receipt_path.read_text())
+                captured = datetime.fromisoformat(receipt['captured_at'].replace('Z', '+00:00'))
+                if not 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= 7200:
+                    raise RuntimeError('Group capture receipt expired')
+                if (receipt.get('run_id') != context.run_id or receipt.get('status') != 'ready'
+                        or receipt.get('pending_voice_count') != 0
+                        or receipt.get('sha256') != hashlib.sha256(path.read_bytes()).hexdigest()):
+                    raise RuntimeError('Group capture receipt mismatches this run or contains pending voices')
             # Browser bridge writes a single {author, works:[...]} snapshot;
             # retain compatibility with the historical JSONL format.
             try:
@@ -30,7 +43,7 @@ class DouyinAdapter(SourceAdapter):
                 docs = [json.loads(line) for line in text.splitlines() if line.strip()]
             if docs and not all(doc.get("schema_version") for doc in docs):
                 return AdapterResult(source["id"], self.source_type, stats={"mode": "browser_session", "skipped": True, "reason": "snapshot_requires_build"})
-            if source.get("max_snapshot_age_hours"):
+            if source.get("max_snapshot_age_hours") and not source.get('require_run_capture'):
                 stamps = [(d.get("timestamps") or {}).get("collected_at") for d in docs]
                 if not stamps or any(not stamp for stamp in stamps):
                     raise RuntimeError("Group snapshot has no collection timestamp")

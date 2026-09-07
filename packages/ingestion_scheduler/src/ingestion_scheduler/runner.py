@@ -173,6 +173,7 @@ def run_scheduler(
                     collected_at=collected_at,
                     dry_run=dry_run,
                     timeout_seconds=int(source.get("timeout_seconds", timeout_seconds)),
+                    processed_item=state.get_processed_item,
                 ),
                 state=state,
                 max_retries=int(source.get("max_retries", max_retries)),

@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_DIR="$ROOT/apps/api"
 DB_PATH="$ROOT/data/quant_intel.sqlite"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
-RUN_ID="premarket_$(date -u '+%Y%m%dT%H%M%SZ')"
+RUN_ID="${QUANT_RUN_ID:-premarket_$(date -u '+%Y%m%dT%H%M%SZ')}"
+[[ "$RUN_ID" =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
@@ -40,7 +41,8 @@ refresh_rc=$?
 set -e
 cat "/tmp/quant_intel_douyin_refresh_${RUN_ID}.json"
 if [[ "$refresh_rc" -ne 0 ]]; then
-  fail "Douyin browser refresh failed; log in once in the dedicated profile and retry"
+  collection_failed=1
+  log "Douyin profile refresh failed; continue other sources and report failure"
 fi
 
 # Rebuild Douyin snapshots and run the audio/ASR enrichment before the
@@ -67,9 +69,8 @@ if bad:
 PY
 fi
 
-if [[ "$collection_failed" -ne 0 ]]; then
-  fail "Douyin snapshot preparation/refresh did not complete; scheduler run skipped"
-fi
+# A group receipt is mandatory in its adapter. Missing capture fails only that
+# source; never stop X/Discord/Substack just because browser access failed.
 
 cd "$API_DIR"
 set +e

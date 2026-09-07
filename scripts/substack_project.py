@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROFILE_DIR = ROOT / "data" / "browser_profiles" / "substack"
 CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 STATE_DB = ROOT / "data" / "premarket_state.sqlite"
+PROCESSING_LEDGER = ROOT / "data" / "collection_state" / "substack_posts.json"
 
 
 def parsed(value: str | None) -> datetime | None:
@@ -98,6 +99,27 @@ def article_text(page, post: dict) -> tuple[str, bool]:
     return text, is_preview
 
 
+def load_processing_ledger() -> dict:
+    if not PROCESSING_LEDGER.exists():
+        return {"version": 1, "posts": {}}
+    try:
+        payload = json.loads(PROCESSING_LEDGER.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {"version": 1, "posts": {}}
+    return payload if isinstance(payload.get("posts"), dict) else {"version": 1, "posts": {}}
+
+
+def post_version(post: dict) -> str:
+    """Use Substack's edit marker when exposed, with publish time fallback."""
+    return str(
+        post.get("post_updated_at")
+        or post.get("updated_at")
+        or post.get("updatedAt")
+        or post.get("post_date")
+        or ""
+    )
+
+
 def download(args: argparse.Namespace) -> dict:
     publication = args.url.rstrip("/")
     after = effective_after(args.source_id, args.after)
@@ -107,6 +129,8 @@ def download(args: argparse.Namespace) -> dict:
         launch["executable_path"] = str(CHROME)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     args.output.mkdir(parents=True, exist_ok=True)
+    ledger = load_processing_ledger()
+    reused = 0
 
     written = []
     with sync_playwright() as playwright:
@@ -116,7 +140,22 @@ def download(args: argparse.Namespace) -> dict:
             page.goto(f"{publication}/archive", wait_until="domcontentloaded", timeout=60_000)
             posts = archive_posts(page, publication, after, before)
             for post in posts:
-                text, is_preview = article_text(page, post)
+                key = str(post.get("canonical_url") or post.get("id") or "")
+                version = post_version(post)
+                previous = (ledger.get("posts") or {}).get(key) if key else None
+                if previous and previous.get("version_marker") == version and str(previous.get("text") or "").strip():
+                    text = str(previous["text"])
+                    is_preview = bool(previous.get("is_preview"))
+                    reused += 1
+                else:
+                    text, is_preview = article_text(page, post)
+                    if key:
+                        ledger.setdefault("posts", {})[key] = {
+                            "version_marker": version,
+                            "text": text,
+                            "is_preview": is_preview,
+                            "processed_at": datetime.now(timezone.utc).isoformat(),
+                        }
                 post_date = parsed(str(post.get("post_date") or ""))
                 stamp = (post_date or datetime.now(timezone.utc)).strftime("%Y%m%d_%H%M%S")
                 slug = safe_slug(str(post.get("slug") or post.get("id") or "post"))
@@ -143,7 +182,9 @@ def download(args: argparse.Namespace) -> dict:
                 written.append(str(path))
         finally:
             context.close()
-    return {"output": str(args.output), "count": len(written), "files": written}
+    PROCESSING_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+    PROCESSING_LEDGER.write_text(json.dumps(ledger, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"output": str(args.output), "count": len(written), "reused_processed_posts": reused, "files": written}
 
 
 def list_posts(args: argparse.Namespace) -> dict:

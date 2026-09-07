@@ -117,12 +117,17 @@ class XAdapter(SourceAdapter):
     ) -> AdapterResult:
         docs = self._filter_docs(source, docs)
         items = [self._normalize_tweet(source, context, doc) for doc in docs]
+        reused = sum(
+            ((item.get("raw_payload") or {}).get("processing_ledger") or {}).get("media") == "reused"
+            for item in items
+        )
         return AdapterResult(
             source_id=source["id"],
             source_type=self.source_type,
             items=items,
             artifacts=artifacts,
             stats={"mode": source.get("mode", "search"), "raw_count": len(docs), "normalized_count": len(items),
+                   "reused_processed_items": reused,
                    "snapshot_latest": max((str((doc or {}).get("date") or (doc or {}).get("created_at") or "") for doc in docs), default=None),
                    "collected_at": context.collected_at},
             planned_commands=planned_commands,
@@ -164,8 +169,17 @@ class XAdapter(SourceAdapter):
         links = data.get("links") or []
         media = data.get("media") or {}
 
+        previous = context.processed_item(source["id"], str(tweet_id)) if tweet_id and context.processed_item else None
+        previous_images = (((previous or {}).get("raw_payload") or {}).get("media") or {}).get("static_images") or []
+        reusable_images = [image for image in previous_images if self._saved_image_exists(image)]
+        unchanged = bool(previous) and str(((previous.get("content") or {}).get("text") or "")) == text
+
         static_images: list[dict[str, Any]] = []
-        if tweet_id:
+        reused_media = False
+        if unchanged and len(reusable_images) == len(x_image_candidates(media)):
+            static_images = reusable_images
+            reused_media = True
+        elif tweet_id:
             static_images = download_static_images(
                 x_image_candidates(media),
                 media_root=context.base_dir / "data" / "media",
@@ -224,8 +238,21 @@ class XAdapter(SourceAdapter):
                 "links": links,
                 "media": media,
                 "source_config_id": source["id"],
+                "processing_ledger": {
+                    "status": "unchanged" if unchanged else ("changed" if previous else "new"),
+                    "media": "reused" if reused_media else "refreshed",
+                    "ledger_item_id": ((previous or {}).get("ingestion") or {}).get("ledger_item_id"),
+                },
             },
         )
+
+    @staticmethod
+    def _saved_image_exists(image: dict[str, Any]) -> bool:
+        path = Path(str(image.get("local_path") or ""))
+        try:
+            return path.is_file() and path.stat().st_size == int(image.get("bytes") or 0) > 0
+        except (OSError, TypeError, ValueError):
+            return False
 
     @staticmethod
     def _clean_tweet_text(value: Any, username: Any = None) -> str:
