@@ -97,10 +97,10 @@ def _apply_metadata_access_guard(root: Path, works: list[dict]) -> None:
 
 def _known_external_ids(root: Path, source_id: str) -> set[str]:
     known: set[str] = set()
-    for db, table in (
-        (root / "data" / "quant_intel.sqlite", "information_items"),
-        (root / "data" / "premarket_state.sqlite", "items"),
-    ):
+    # Only the final store proves that import completed. Scheduler state can
+    # contain a captured item whose final transaction never happened and must
+    # therefore never suppress recovery/enrichment.
+    for db, table in ((root / "data" / "quant_intel.sqlite", "information_items"),):
         if not db.exists():
             continue
         with sqlite3.connect(db) as conn:

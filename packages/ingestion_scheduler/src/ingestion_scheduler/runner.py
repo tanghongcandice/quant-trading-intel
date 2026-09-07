@@ -99,6 +99,34 @@ def _advance_main_cursor(db_path: Path, source_id: str, item: dict[str, Any], ru
         )
 
 
+def _final_store_contains(db_path: Path, source_id: str, external_id: str | None) -> bool:
+    """Treat the final information store as the authoritative dedupe ledger."""
+    if not external_id or not db_path.exists():
+        return False
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM information_items WHERE source_id = ? AND external_id = ? LIMIT 1",
+                (source_id, str(external_id)),
+            ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
+
+
+def _final_store_cursor(db_path: Path, source_id: str) -> dict[str, Any] | None:
+    """Read only a cursor committed by the final-store import transaction."""
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM source_cursors WHERE source_id = ?", (source_id,)).fetchone()
+    except sqlite3.Error:
+        return None
+    return dict(row) if row else None
+
+
 def select_sources(
     config: dict[str, Any],
     *,
@@ -142,6 +170,7 @@ def run_scheduler(
     errors_path = run_dir / "errors.jsonl"
     summary_path = run_dir / "run_summary.json"
     collected_at = utc_now_iso()
+    final_db = base_dir / "data" / "quant_intel.sqlite"
 
     state = StateStore(state_db)
     state.start_run(run_id, config_path)
@@ -173,7 +202,11 @@ def run_scheduler(
                     collected_at=collected_at,
                     dry_run=dry_run,
                     timeout_seconds=int(source.get("timeout_seconds", timeout_seconds)),
-                    processed_item=state.get_processed_item,
+                    processed_item=lambda source_id, external_id: (
+                        state.get_processed_item(source_id, external_id)
+                        if _final_store_contains(final_db, source_id, external_id)
+                        else None
+                    ),
                 ),
                 state=state,
                 max_retries=int(source.get("max_retries", max_retries)),
@@ -259,7 +292,10 @@ def _run_source(
             # Apply the independent successful watermark with a small overlap
             # window.  The complete browser snapshot remains in artifacts;
             # this only controls which records are candidates for this run.
-            cursor = state.get_cursor(source_id)
+            # Scheduler state is a capture/audit ledger. Only the cursor
+            # committed by final-store import may exclude candidate records.
+            final_db = context.base_dir / "data" / "quant_intel.sqlite"
+            cursor = _final_store_cursor(final_db, source_id)
             cutoff = None
             if cursor and cursor.get("last_successful_created_at"):
                 try:
@@ -302,7 +338,10 @@ def _run_source(
                             }],
                         )
                         continue
+                    external_id = (item.get("external") or {}).get("id")
+                    committed = _final_store_contains(final_db, source_id, external_id)
                     inserted, item_id = state.upsert_item(item, context.run_id, seen_at)
+                    recoverable = not inserted and not committed
                     item["id"] = item_id
                     item.setdefault("ingestion", {})
                     item["ingestion"].update(
@@ -310,18 +349,17 @@ def _run_source(
                             "run_id": context.run_id,
                             "source_id": source_id,
                             "seen_at": seen_at,
-                            "is_new": inserted,
+                            "is_new": inserted or recoverable,
+                            "recovered_from_uncommitted_state": recoverable,
                         }
                     )
-                    if inserted:
+                    if inserted or recoverable:
                         new_count += 1
                     else:
                         duplicate_count += 1
-                    # Scheduler state records what was successfully collected,
-                    # independently of whether the final-store Discord guard
-                    # later retained this source's copy. A cross-source mirror
-                    # removed from the main DB must not be emitted as new again.
-                    if inserted or include_duplicates:
+                    # A state-only item is recoverable: the prior collection
+                    # succeeded, but its final-store transaction did not.
+                    if inserted or recoverable or include_duplicates:
                         emitted_docs.append(item)
                 append_jsonl(items_path, emitted_docs)
 

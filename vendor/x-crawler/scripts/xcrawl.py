@@ -75,6 +75,8 @@ EXTRACT_TWEETS_JS = r"""
   const subscriptionEvidence = String(article.innerText || '').match(
     /(?:Subscribe to (?:read|see|view|unlock)|Only (?:subscribers|Subscribers) can|订阅(?:以|后)(?:查看|阅读)|仅(?:限)?订阅者(?:可见|可查看))/i
   );
+  const renderedText = textNode ? String(textNode.innerText || '').trim() : '';
+  const explicitMore = /(?:Show more|显示更多|閱讀更多)/i.test(String(article.innerText || ''));
 
   const links = textNode ? Array.from(textNode.querySelectorAll('a[href]'))
     .map(a => abs(a.getAttribute('href'))).filter(Boolean) : [];
@@ -96,7 +98,10 @@ EXTRACT_TWEETS_JS = r"""
     subscription_evidence: subscriptionEvidence ? subscriptionEvidence[0] : null,
     url: abs(href),
     date: time ? time.getAttribute('datetime') : null,
-    rawContent: textNode ? String(textNode.innerText || '').trim() : '',
+    rawContent: renderedText,
+    detail_hydration_candidate: !subscriptionEvidence && (
+      explicitMore || (renderedText.length >= 250 && !/[.!?。！？…][\]）)'”」』]*$/.test(renderedText))
+    ),
     lang: textNode ? textNode.getAttribute('lang') : null,
     user: {
       username: (handleLine || `@${username}`).replace(/^@/, ''),
@@ -296,6 +301,56 @@ async def _extract_visible(page: Page) -> list[dict[str, Any]]:
     return [_normalize_doc(row) for row in await articles.evaluate_all(EXTRACT_TWEETS_JS)]
 
 
+async def _extract_requested_tweet(page: Page, tweet_id: str) -> dict[str, Any] | None:
+    """Wait for a detail page to settle and return its longest matching rendering."""
+    longest: dict[str, Any] | None = None
+    stable_rounds = 0
+    for _ in range(5):
+        matches = [row for row in await _extract_visible(page) if str(row.get("id") or "") == tweet_id]
+        current = max(matches, key=lambda row: len(str(row.get("rawContent") or "")), default=None)
+        if current is not None:
+            current_length = len(str(current.get("rawContent") or ""))
+            prior_length = len(str((longest or {}).get("rawContent") or ""))
+            if current_length > prior_length:
+                longest = current
+                stable_rounds = 0
+            else:
+                stable_rounds += 1
+            if stable_rounds >= 2:
+                break
+        await page.wait_for_timeout(350)
+    return longest
+
+
+async def _hydrate_public_long_posts(page: Page, found: dict[str, dict[str, Any]]) -> None:
+    candidates = [
+        (tweet_id, doc)
+        for tweet_id, doc in found.items()
+        if doc.get("detail_hydration_candidate") and not doc.get("subscription_preview")
+    ]
+    if not candidates:
+        return
+
+    detail_page = await page.context.new_page()
+    try:
+        for tweet_id, preview in candidates:
+            await _goto(detail_page, f"https://x.com/i/status/{tweet_id}")
+            try:
+                await detail_page.locator('article[data-testid="tweet"]').first.wait_for(
+                    state="visible", timeout=15_000
+                )
+                hydrated = await _extract_requested_tweet(detail_page, tweet_id)
+            except Exception:
+                hydrated = None
+            if hydrated and len(str(hydrated.get("rawContent") or "")) > len(
+                str(preview.get("rawContent") or "")
+            ):
+                hydrated["detail_hydrated"] = True
+                found[tweet_id] = hydrated
+    finally:
+        await detail_page.close()
+
+
 async def _collect_timeline(
     *,
     url: str,
@@ -349,6 +404,10 @@ async def _collect_timeline(
                     await page.wait_for_timeout(int(os.environ.get("X_CRAWLER_SCROLL_DELAY_MS", "1800")))
 
                 docs = list(found.values())
+                await _hydrate_public_long_posts(page, found)
+                docs = list(found.values())
+                for doc in docs:
+                    doc.pop("detail_hydration_candidate", None)
                 docs.sort(key=lambda row: str(row.get("date") or ""), reverse=True)
                 if debug:
                     debug_path = EXPORT_DIR / "last-page.png"

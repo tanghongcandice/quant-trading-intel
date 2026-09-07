@@ -13,6 +13,7 @@ from douyin_group_processing_ledger import record, reuse, voice_batches
 from ingestion_scheduler.adapters.base import AdapterContext
 from ingestion_scheduler.adapters.discord import DiscordAdapter
 from ingestion_scheduler.adapters.x import XAdapter
+from ingestion_scheduler.runner import _final_store_contains, _final_store_cursor
 
 
 class GroupProcessingLedgerTests(unittest.TestCase):
@@ -110,6 +111,35 @@ class StableIdAdapterReuseTests(unittest.TestCase):
                 )
             self.assertEqual(item["raw_payload"]["processing_ledger"]["media"], "reused")
 
+
+class FinalStoreAuthorityTests(unittest.TestCase):
+    def test_scheduler_state_does_not_prove_final_import(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / "quant_intel.sqlite"
+            with sqlite3.connect(db) as conn:
+                conn.execute(
+                    "CREATE TABLE information_items(id TEXT PRIMARY KEY, source_id TEXT, external_id TEXT)"
+                )
+                conn.execute(
+                    "CREATE TABLE source_cursors(source_id TEXT PRIMARY KEY, "
+                    "last_successful_created_at TEXT, last_successful_external_id TEXT, "
+                    "updated_at TEXT, run_id TEXT)"
+                )
+            self.assertFalse(_final_store_contains(db, "douyin_test", "123"))
+            self.assertIsNone(_final_store_cursor(db, "douyin_test"))
+
+            with sqlite3.connect(db) as conn:
+                conn.execute(
+                    "INSERT INTO information_items VALUES(?,?,?)", ("itm_123", "douyin_test", "123")
+                )
+                conn.execute(
+                    "INSERT INTO source_cursors VALUES(?,?,?,?,?)",
+                    ("douyin_test", "2026-09-07T11:00:00Z", "123", "now", "run"),
+                )
+            self.assertTrue(_final_store_contains(db, "douyin_test", "123"))
+            self.assertEqual(
+                _final_store_cursor(db, "douyin_test")["last_successful_external_id"], "123"
+            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,9 +14,8 @@ class AdapterContext:
     collected_at: str
     dry_run: bool
     timeout_seconds: int
-    # Read-only lookup into the scheduler's durable processing ledger.  Adapters
-    # use this before expensive media/enrichment work; final dedupe still runs
-    # transactionally in the runner and ingestion service.
+    # Read-only lookup for reusable processed work. The runner exposes a ledger
+    # record only after verifying that its item exists in the final store.
     processed_item: Callable[[str, str], dict[str, Any] | None] | None = None
 
 
