@@ -5,6 +5,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from ingestion_scheduler.adapters.base import AdapterContext
 from ingestion_scheduler.adapters.discord import DiscordAdapter
 from ingestion_scheduler.adapters.x import XAdapter
 from ingestion_scheduler.runner import _final_store_contains, _final_store_cursor
+from prepare_douyin_ingestion import PROFILES, _candidate_works
 
 
 class GroupProcessingLedgerTests(unittest.TestCase):
@@ -140,6 +142,29 @@ class FinalStoreAuthorityTests(unittest.TestCase):
             self.assertEqual(
                 _final_store_cursor(db, "douyin_test")["last_successful_external_id"], "123"
             )
+
+    def test_panyi_current_incremental_is_not_limited_by_legacy_backfill_state(self) -> None:
+        cfg = PROFILES["douyin_panyiyoudianshen"]
+        works = [
+            {
+                "aweme_id": external_id,
+                "ownership_verified": True,
+                "profile_url": cfg["profile_url"],
+            }
+            for external_id in (
+                "7682634013664257256",
+                "7682763015233630068",
+                "7682982133753315304",
+                "7683084290816711400",
+            )
+        ]
+        selected = _candidate_works(
+            "douyin_panyiyoudianshen",
+            cfg,
+            {"works": works},
+            datetime.fromisoformat("2026-09-06T08:24:00+00:00"),
+        )
+        self.assertEqual([row["aweme_id"] for row in selected], [row["aweme_id"] for row in works])
 
 if __name__ == "__main__":
     unittest.main()

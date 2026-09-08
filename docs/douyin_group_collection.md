@@ -1,5 +1,15 @@
 # 最新范围修正（2026-09-07，覆盖下文旧范围）
 
+## 每轮 Chrome 前检可靠性规则（2026-09-08 起）
+
+所有计划轮次均执行分阶段前检并保存到 `runs/<QUANT_RUN_ID>/chrome_preflight_diagnostics.jsonl`：先记录已登录 Chrome 标签枚举与连接结果，再单独记录群名、最新锚点和消息 DOM 是否实际读取成功。标签存在不等于页面读取成功；只有实际 DOM 中核实「宇菠萝的认知圈1群」、最新端和两小时重叠范围后，才允许声明前检成功。
+
+首次连接或 DOM 读取失败时，在正常工具许可范围内约 3 秒后复查连接、约 10 秒后复查页面实读，最多两次；每次必须记录开始/结束时间、耗时、阶段、attempt、成功状态或错误原文摘要。不得绕过系统锁屏或认证。仍失败时保留失败证据，不生成虚假同轮凭证，并继续其他来源。
+
+每轮使用 `scripts/chrome_preflight_diagnostics.py` 记录阶段，并在凭证完成后执行 `validate`。成功路径至少包含 `chrome_tab_enumeration`、`group_dom_read`、`processing_ledger_reuse`、`group_receipt` 四个成功阶段。可用 `power` 子命令只读保存相邻窗口内显示器开关与 `SkyComputerUseService` 活动；这些日志只用于时序证据。`screenLock` 设置只代表设置，关闭显示器、显示器唤醒或一次 `Mac is locked` 错误均不能单独证明当时会话真实锁定。
+
+即使页面读取成功，也必须先保存轻量快照并执行处理账本 `reuse`；只对 `pending_voice_count` 中仍为空的新批次点击原生“转文字”。最终数据库中不存在对应 item 时不得复用。不得重复转写已完成批次。
+
 ## 每日任务强制前置步骤（本轮凭证）
 
 先生成唯一 `QUANT_RUN_ID= prem arket` 格式运行 ID（实际使用 `premarket_YYYYMMDDTHHMMSSZ`，不含空格），在启动每日 shell 前完成 Chrome 群聊读取。先保存仅含页面当前可见字段的轻量快照，再执行 `.venv/bin/python scripts/douyin_group_processing_ledger.py reuse`。该命令只会在角色/头像、时间分隔、连续语音时长序列组成的批次指纹完全一致，且对应 item 仍存在于数据库时复用既有审核转写。随后只对 `pending_voice_count` 中仍为空的新批次逐段执行原生“转文字”；禁止对已成功复用的批次再次点击。核实最新端和上次成功时间前两小时的覆盖范围。新快照添加 `collection_evidence`：`run_id` 为该 ID、`latest_checked: true`、`overlap_covered: true`、`pending_voice_count: 0`。这些是实际完成后的证据声明，不得为绕过校验填写；未能覆盖、锁屏或转写失败必须保留失败状态。

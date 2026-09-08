@@ -117,20 +117,49 @@ def _known_external_ids(root: Path, source_id: str) -> set[str]:
     return known
 
 
+def _candidate_works(source_id: str, cfg: dict, payload: dict, cutoff: datetime | None) -> list[dict]:
+    """Apply the same final-store cursor window to every profile source.
+
+    Historical backfill state must never gate current incremental discovery.
+    Panyi keeps its stricter rendered-profile ownership check, but otherwise
+    follows the same overlap and candidate rules as Jiujiujiucai.
+    """
+    works: list[dict] = []
+    for work in payload["works"]:
+        if source_id == "douyin_panyiyoudianshen" and not (
+            work.get("ownership_verified") and work.get("profile_url") == cfg["profile_url"]
+        ):
+            continue
+        if work.get("pinned"):
+            continue
+        row = dict(work)
+        if not row.get("review_only"):
+            row.pop("no_audio", None)
+            row.pop("no_speech", None)
+        if cutoff is not None:
+            raw = row.get("created_at") or row.get("create_time") or row.get("publish_time")
+            if raw is None and str(row.get("aweme_id") or "").isdigit():
+                try:
+                    raw = datetime.fromtimestamp(int(row["aweme_id"]) >> 32, tz=timezone.utc).isoformat()
+                except (ValueError, OSError, OverflowError):
+                    raw = None
+            try:
+                if isinstance(raw, (int, float)):
+                    value = datetime.fromtimestamp(raw, tz=timezone.utc)
+                else:
+                    value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                if value < cutoff:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        works.append(row)
+    return works
+
+
 def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     cfg = PROFILES[source_id]
     snapshot_path = root / cfg["snapshot"]
     output_path = root / cfg["output"]
-    if source_id == 'douyin_panyiyoudianshen':
-        # The hourly, reviewed queue owns this source, including retries.
-        # Never let the five-times-daily job bypass its shared batch budget.
-        state_file = root / 'data/panyi_backfill_state.json'
-        batch_state = json.loads(state_file.read_text()) if state_file.exists() else {}
-        if not batch_state.get('completed') or __import__('time').time() < batch_state.get('next_allowed_at', 0):
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text('', encoding='utf-8')
-            return {'source_id': source_id, 'status': 'ready', 'candidate_items': 0,
-                    'collection_mode': 'hourly_reviewed_queue', 'output': str(output_path)}
     if not snapshot_path.exists():
         if allow_missing:
             return {"source_id": source_id, "status": "missing"}
@@ -140,44 +169,9 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     # The current standard builder requires media/ASR for full transcription.
     # Browser-only collection has no authorized audio payload, so mark these
     # cards title-only while preserving the normal information_item schema.
-    works = []
     snapshot_count = len(payload["works"])
     cutoff = _cursor_cutoff(root, source_id)
-    for work in payload["works"]:
-        if source_id == 'douyin_panyiyoudianshen' and not (work.get('ownership_verified') and work.get('profile_url') == cfg['profile_url']):
-            continue
-        if not work.get("pinned"):
-            row = dict(work)
-            # ``no_audio`` is a legacy marker from browser-only captures.  It
-            # must not suppress the new video-download/ASR recovery pass.
-            # Recompute it below from the assets actually found this run.
-            if not row.get("review_only"):
-                row.pop("no_audio", None)
-                row.pop("no_speech", None)
-            if cutoff is not None:
-                raw = row.get("created_at") or row.get("create_time") or row.get("publish_time")
-                if raw is None and str(row.get("aweme_id") or "").isdigit():
-                    try:
-                        raw = datetime.fromtimestamp(int(row["aweme_id"]) >> 32, tz=timezone.utc).isoformat()
-                    except (ValueError, OSError, OverflowError):
-                        raw = None
-                try:
-                    if isinstance(raw, (int, float)):
-                        value = datetime.fromtimestamp(raw, tz=timezone.utc)
-                    else:
-                        value = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                    if value < cutoff:
-                        continue
-                except (TypeError, ValueError):
-                    pass
-            works.append(row)
-    if source_id == 'douyin_panyiyoudianshen':
-        with sqlite3.connect(root / 'data/quant_intel.sqlite') as conn:
-            known = {r[0] for r in conn.execute('SELECT external_id FROM information_items WHERE source_id=?', (source_id,))}
-        works = [w for w in works if str(w['aweme_id']) not in known and (int(w['aweme_id']) >> 32) >= 1777219200][:min(20, batch_state.get('batch_size',20))]
-        if works:
-            batch_state['next_allowed_at'] = __import__('time').time() + batch_state.get('interval_seconds',3600)
-            state_file.write_text(json.dumps(batch_state))
+    works = _candidate_works(source_id, cfg, payload, cutoff)
     # A rendered badge is the first guard. Existing public detail metadata is
     # the second guard and wins over a false-negative browser snapshot.
     _apply_metadata_access_guard(root, works)
