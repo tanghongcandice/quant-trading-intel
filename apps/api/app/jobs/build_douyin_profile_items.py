@@ -11,6 +11,7 @@ from app.jobs.repair_douyin_transcripts import (
     apply_contextual_corrections,
     content_hash,
     format_whisper_segments,
+    review_a_share_terms,
 )
 
 
@@ -77,6 +78,7 @@ def build_item(
     transcription: dict
     metadata_path = None
     media_path = None
+    term_review = None
 
     if review_only or no_audio or no_speech:
         text = MEMBER_NOTICE if review_only else (NO_AUDIO_NOTICE if no_audio else NO_SPEECH_NOTICE)
@@ -101,6 +103,7 @@ def build_item(
             text = text[: -len("\n\n现在")].rstrip()
         if not text:
             raise ValueError(f"empty transcript for {aweme_id}")
+        term_review = review_a_share_terms(title, text, corrections)
         # The speech source is the independently downloaded Douyin
         # ``bit_rate_audio`` track used by Whisper.  Do not point the item at
         # ``*_music.mp3``: that is optional background music, not the spoken
@@ -173,6 +176,7 @@ def build_item(
             "metadata_path": str(metadata_path.resolve()) if metadata_path else None,
             "audio_path": str(media_path.resolve()) if media_path else None,
             "transcription": transcription,
+            "a_share_term_review": term_review,
             "analysis_policy": {
                 "include": not (review_only or no_audio or no_speech),
                 "mode": "review_only" if (review_only or no_audio or no_speech) else "analysis",

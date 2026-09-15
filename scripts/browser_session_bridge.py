@@ -86,6 +86,12 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length).decode("utf-8")
             if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
                 raw = parse_qs(raw)["payload"][0]
+            if urlparse(self.path).path == '/group-checkpoint':
+                from group_capture_checkpoint import checkpoint
+                envelope = json.loads(raw)
+                result = checkpoint(self.root, envelope['run_id'], envelope['window'])
+                self._checkpoint_response(result)
+                return
             payload = _validate(source_id, json.loads(raw))
             path = self.root / "data" / "browser_sessions" / SOURCES[source_id][1]
             _write_atomic(path, payload)
@@ -99,9 +105,26 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _checkpoint_response(self, result):
+        # A stable form avoids a new navigation for every captured window.
+        import html
+        body = ('<!doctype html><meta charset="utf-8"><title>群聊断点保存</title>'
+                '<pre id="checkpoint-result">' + html.escape(json.dumps(result, ensure_ascii=False)) + '</pre>'
+                '<form method="post" action="/group-checkpoint">'
+                '<label>群聊窗口 JSON<textarea name="payload"></textarea></label>'
+                '<button type="submit">保存窗口并检查进度</button></form>').encode()
+        self.send_response(200)
+        self.send_header('Content-Type','text/html; charset=utf-8')
+        self.send_header('Content-Length',str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         """Small GET fallback for browser sandboxes that disallow fetch/POST."""
         parsed = urlparse(self.path)
+        if parsed.path == '/group-checkpoint':
+            self._checkpoint_response({'ready':False, 'message':'Waiting for a rendered DOM window'})
+            return
         if parsed.path == "/group-import":
             body = ('<!doctype html><meta charset="utf-8"><title>群聊本地导入</title>'
                     '<h1>宇菠萝的认知圈1群 · 本地采集快照</h1>'

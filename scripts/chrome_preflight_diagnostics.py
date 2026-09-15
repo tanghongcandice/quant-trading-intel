@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +67,33 @@ def record(args: argparse.Namespace) -> dict[str, Any]:
         "details": details,
     }
     append_event(folder / "chrome_preflight_diagnostics.jsonl", event)
+    return event
+
+
+def begin(args: argparse.Namespace) -> dict[str, Any]:
+    """Persist before a tool call, so even a timeout/reset leaves a start event."""
+    folder = run_dir(args.root, args.run_id)
+    token = uuid.uuid4().hex
+    event = {'run_id': args.run_id, 'stage': args.stage, 'attempt': args.attempt,
+             'token': token, 'started_at': utc_now(), 'monotonic': time.monotonic()}
+    (folder / ('call_' + token + '.json')).write_text(json.dumps(event))
+    append_event(folder / 'chrome_preflight_diagnostics.jsonl', {**event, 'event': 'start'})
+    return event
+
+
+def end(args: argparse.Namespace) -> dict[str, Any]:
+    if not re.fullmatch(r'[a-f0-9]{32}', args.token):
+        raise ValueError('Invalid call token')
+    folder = run_dir(args.root, args.run_id)
+    path = folder / ('call_' + args.token + '.json')
+    event = json.loads(path.read_text())
+    if event.get('ended_at'):
+        raise ValueError('Call already ended')
+    event.update(ended_at=utc_now(), duration_ms=max(1, round((time.monotonic()-event.pop('monotonic'))*1000)),
+                 success=args.status == 'success', result_summary=args.summary,
+                 details=json.loads(args.details_json or '{}'), event='end')
+    path.write_text(json.dumps(event))
+    append_event(folder / 'chrome_preflight_diagnostics.jsonl', event)
     return event
 
 
@@ -132,10 +162,30 @@ def power(args: argparse.Namespace) -> dict[str, Any]:
 def validate(args: argparse.Namespace) -> dict[str, Any]:
     folder = run_dir(args.root, args.run_id)
     path = folder / "chrome_preflight_diagnostics.jsonl"
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    succeeded = {row.get("stage") for row in rows if row.get("success") is True}
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.exists() else []
+    # A later failed attempt invalidates an earlier success. An unclosed call is
+    # a real incomplete operation, not a successful stage.
+    latest = {row.get('stage'): row for row in rows if row.get('stage') in REQUIRED_SUCCESS_STAGES}
+    succeeded = {stage for stage, row in latest.items() if row.get('success') is True and row.get('duration_ms', 0) > 0}
     missing = sorted(REQUIRED_SUCCESS_STAGES - succeeded)
-    result = {"run_id": args.run_id, "ready": not missing, "missing_success_stages": missing}
+    errors = []
+    try:
+        from group_capture_checkpoint import validate_capture
+        capture = json.loads((folder / 'group_capture.json').read_text())
+        validate_capture(capture, args.root, args.run_id)
+        receipt = json.loads((folder / 'group_receipt.json').read_text())
+        built = (folder / 'group_items.jsonl').read_bytes()
+        if receipt.get('run_id') != args.run_id or receipt.get('sha256') != hashlib.sha256(built).hexdigest():
+            raise ValueError('Receipt content hash/run mismatch')
+        if receipt.get('capture_sha256') != hashlib.sha256((folder / 'group_capture.json').read_bytes()).hexdigest():
+            raise ValueError('Capture content hash mismatch')
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        errors.append(str(exc))
+    result = {"run_id": args.run_id, "ready": not missing and not errors,
+              "missing_success_stages": missing, 'evidence_errors': errors}
+    if result['ready']:
+        result.update(capture_sha256=receipt['capture_sha256'], sha256=receipt['sha256'],
+                      diagnostics_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
     (folder / "chrome_preflight_validation.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -156,6 +206,18 @@ def parser() -> argparse.ArgumentParser:
     rec.add_argument("--summary", required=True)
     rec.add_argument("--details-json")
     rec.set_defaults(handler=record)
+    start = sub.add_parser('begin')
+    start.add_argument('--run-id', required=True)
+    start.add_argument('--stage', required=True)
+    start.add_argument('--attempt', type=int, default=1)
+    start.set_defaults(handler=begin)
+    finish = sub.add_parser('end')
+    finish.add_argument('--run-id', required=True)
+    finish.add_argument('--token', required=True)
+    finish.add_argument('--status', choices=('success', 'error'), required=True)
+    finish.add_argument('--summary', required=True)
+    finish.add_argument('--details-json', default='{}')
+    finish.set_defaults(handler=end)
     pwr = sub.add_parser("power")
     pwr.add_argument("--run-id", required=True)
     pwr.add_argument("--window-start", required=True)
@@ -169,7 +231,10 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = parser().parse_args()
-    print(json.dumps(args.handler(args), ensure_ascii=False, indent=2))
+    result = args.handler(args)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == 'validate' and not result['ready']:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

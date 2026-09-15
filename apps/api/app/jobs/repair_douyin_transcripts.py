@@ -162,6 +162,7 @@ CONTEXT_CORRECTIONS = (
     (r"地产看经济，误管", "地产看经纪、物管"),
     (r"仓位别中", "仓位别重"),
     (r"一息落地", "议息落地"),
+    (r"美联储律决议", "美联储利率决议"),
     (r"手购手用", "首购首用"),
     (r"补贴是给企业书写", "补贴是给企业输血"),
     (r"都号token", "都消耗 Token"),
@@ -823,6 +824,28 @@ CONTEXTUAL_CANDIDATES = (
     },
 )
 
+# Canonical A-share names and market terms that are especially vulnerable to
+# Mandarin ASR homophones.  This is an auditable pre-ingestion check, separate
+# from entity extraction: a transcript may legitimately contain no term here.
+A_SHARE_CANONICAL_TERMS = (
+    "金健米业", "白银有色", "葫芦娃", "天孚通信", "寒武纪", "新易盛",
+    "芒果超媒", "海鸥住工", "集泰股份", "博纳影业", "欢瑞世纪",
+    "长城军工", "建设工业", "用友网络", "泛微网络", "药明康德",
+    "创业板", "科创板", "涨停", "连板", "主线", "主升", "中军",
+    "补涨", "低吸", "承接", "跳空缺口", "成交量", "净买入",
+    "厄尔尼诺", "霍尔木兹海峡", "美联储", "利率决议", "股指期货",
+)
+
+# Every expression here has one unambiguous canonical replacement in
+# CONTEXT_CORRECTIONS.  If one survives that pass, fail closed instead of
+# persisting a known bad security name or finance term.
+A_SHARE_BLOCKING_ASR_ERRORS = (
+    r"金剑米", r"白银纽丝", r"胡罗", r"天股通信", r"寒武器",
+    r"新益胜", r"芒果超梅", r"海鸥助攻", r"吉泰股份", r"博拿影业",
+    r"七连版", r"一字版", r"低息资金", r"资金沉结", r"挑空缺口",
+    r"鄂尔尼诺", r"或者木子海峡", r"机构近买入", r"美联储律决议",
+)
+
 
 @dataclass(frozen=True)
 class TranscriptRepair:
@@ -989,6 +1012,28 @@ def apply_contextual_corrections(title: str, text: str) -> tuple[str, tuple[dict
                 }
             )
     return corrected, tuple(changes)
+
+
+def review_a_share_terms(
+    title: str,
+    text: str,
+    corrections: tuple[dict[str, str], ...] = (),
+) -> dict[str, Any]:
+    """Verify high-confidence A-share names/terms before an item is built."""
+    combined = f"{title}\n{text}"
+    canonical = sorted(term for term in A_SHARE_CANONICAL_TERMS if term in combined)
+    unresolved = sorted(
+        {pattern for pattern in A_SHARE_BLOCKING_ASR_ERRORS if re.search(pattern, combined, flags=re.I)}
+    )
+    if unresolved:
+        raise ValueError("unresolved A-share ASR terms: " + ", ".join(unresolved))
+    return {
+        "status": "passed",
+        "checked_before_ingestion": True,
+        "canonical_terms": canonical,
+        "correction_count": sum(int(change.get("count") or 0) for change in corrections),
+        "unresolved_suspects": [],
+    }
 
 
 def _duration_seconds(metadata: dict[str, Any]) -> float:

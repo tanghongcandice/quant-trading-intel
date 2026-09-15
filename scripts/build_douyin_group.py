@@ -117,8 +117,8 @@ def build(payload):
 
     for row in rows:
         r = dict(row)
-        if r.get('time'):
-            next_time = resolve_time(r['time'], captured)
+        if r.get('resolved_time') or r.get('time'):
+            next_time = r.get('resolved_time') or resolve_time(r['time'], captured)
             if next_time != current_time: flush()
             current_time = next_time
         if r.get('message_kind') == 'system_notice' or (not r.get('author') and (

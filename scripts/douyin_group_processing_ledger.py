@@ -43,6 +43,7 @@ def voice_batches(payload: dict[str, Any]) -> list[dict[str, Any]]:
     batches: list[dict[str, Any]] = []
     current_time = current_author = current_speaker = current_role = None
     run: list[dict[str, Any]] = []
+    previous_index = None
 
     def flush() -> None:
         nonlocal run
@@ -67,8 +68,12 @@ def voice_batches(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     for original in rows:
         row = dict(original)
-        if row.get("time"):
-            next_time = resolve_time(str(row["time"]), captured)
+        if previous_index is not None and previous_index - int(row['index']) != 1:
+            flush()
+            current_author = current_speaker = current_role = None
+        previous_index = int(row['index'])
+        if row.get("resolved_time") or row.get("time"):
+            next_time = row.get('resolved_time') or resolve_time(str(row["time"]), captured)
             if next_time != current_time:
                 flush()
             current_time = next_time
@@ -121,10 +126,14 @@ def reuse(payload: dict[str, Any], ledger: dict[str, Any], db_path: Path) -> dic
     reused_batches = reused_segments = 0
     for batch in voice_batches(payload):
         stored = (ledger.get("batches") or {}).get(batch["fingerprint"])
-        if not stored or not _db_item_exists(db_path, stored.get("item_id")):
-            continue
+        if not stored or not committed_batch(db_path, stored):
+            stored = verified_prefix(batch, db_path)
+            if not stored:
+                continue
         voices = stored.get("voices") or []
-        if len(voices) != len(batch["indexes"]) or not all(str(value).strip() for value in voices):
+        if len(voices) > len(batch["indexes"]) or not all(str(value).strip() for value in voices):
+            continue
+        if any(current and current != previous for current, previous in zip(batch['voices'], voices)):
             continue
         changed = False
         for index, text in zip(batch["indexes"], voices):
@@ -135,6 +144,53 @@ def reuse(payload: dict[str, Any], ledger: dict[str, Any], db_path: Path) -> dic
         if changed:
             reused_batches += 1
     return {"reused_batches": reused_batches, "reused_segments": reused_segments}
+
+
+def committed_batch(db_path, stored):
+    if not db_path.exists(): return False
+    with sqlite3.connect(db_path) as conn:
+        columns = {r[1] for r in conn.execute('PRAGMA table_info(information_items)')}
+        if not {'source_id','external_id','raw_json'} <= columns: return False
+        row = conn.execute('SELECT raw_json FROM information_items WHERE source_id=? AND (id=? OR external_id=?)',
+            (SOURCE,stored.get('item_id'),stored.get('external_id'))).fetchone()
+    if not row: return False
+    item = json.loads(row[0])
+    parts = (item.get('raw_payload') or {}).get('message_parts') or []
+    return [p.get('voice') for p in parts] == stored.get('voices')
+
+
+def verified_prefix(batch, db_path):
+    """Only reuse a changed batch after two observed native segments agree.
+
+    Durations or a same-name avatar alone are insufficient. Ambiguous matches,
+    reordered segments and date changes fail closed. Old uncommitted ledger
+    entries never supply text on this path.
+    """
+    if not db_path.exists() or len(batch['voices']) < 2 or not all(batch['voices'][:2]):
+        return None
+    context = batch['context']
+    with sqlite3.connect(db_path) as conn:
+        columns = {r[1] for r in conn.execute('PRAGMA table_info(information_items)')}
+        if not {'raw_json', 'source_id', 'id'} <= columns: return None
+        records = conn.execute('SELECT id,raw_json FROM information_items WHERE source_id=?', (SOURCE,)).fetchall()
+    matches = []
+    for item_id, raw in records:
+        item = json.loads(raw)
+        parts = (item.get('raw_payload') or {}).get('message_parts') or []
+        if len(parts) < 2 or len(parts) > len(batch['indexes']): continue
+        if parts[0].get('speaker') != context['speaker'] or parts[0].get('sender_role') != context['role']: continue
+        old_time = (item.get('timestamps') or {}).get('created_at')
+        if not old_time: continue
+        a = datetime.fromisoformat(old_time.replace('Z', '+00:00'))
+        b = datetime.fromisoformat(context['created_at'].replace('Z', '+00:00'))
+        if a.date() != b.date() or abs((a-b).total_seconds()) > 180: continue
+        voices = [p.get('voice') or '' for p in parts]
+        if not all(voices): continue
+        if [p.get('duration') for p in parts] != context['durations'][:len(parts)]: continue
+        if voices[:2] != batch['voices'][:2]: continue
+        if any(v and v != old for v,old in zip(batch['voices'], voices)): continue
+        matches.append({'item_id':item_id,'voices':voices})
+    return matches[0] if len(matches) == 1 else None
 
 
 def record(payload: dict[str, Any], items: list[dict[str, Any]], ledger: dict[str, Any]) -> dict[str, int]:
@@ -199,7 +255,7 @@ def main() -> None:
         result["reusable_batches"] = sum(
             1 for batch in voice_batches(payload)
             if (ledger.get("batches") or {}).get(batch["fingerprint"])
-            and _db_item_exists(args.db, ledger["batches"][batch["fingerprint"]].get("item_id"))
+            and committed_batch(args.db, ledger["batches"][batch["fingerprint"]])
         )
     print(json.dumps(result, ensure_ascii=False))
 

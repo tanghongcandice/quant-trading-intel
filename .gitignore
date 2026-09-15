@@ -20,6 +20,7 @@ data/
 logs/
 browser_sessions/
 runs/
+outputs/
 
 # Local deployment state. The reusable gateway and launchd definitions remain tracked.
 deploy/cloudflared/config.yml

@@ -19,7 +19,11 @@ class DouyinAdapter(SourceAdapter):
         fixture = source.get("fixture_file") or source.get("browser_snapshot")
         if fixture:
             path = resolve_path(fixture, context.base_dir)
+            if source.get('require_run_capture') and not context.dry_run:
+                path = context.run_dir / 'group_items.jsonl'
             if not path.exists():
+                if source.get('require_run_capture'):
+                    raise RuntimeError('Group capture incomplete: same-run group_items.jsonl missing; inspect chrome_preflight_diagnostics.jsonl and group_checkpoint_status.json')
                 raise RuntimeError(f"Douyin browser page data missing: {path}; run douyin_profile_extract.js in the signed-in profile page first")
             text = path.read_text(encoding="utf-8").strip()
             if source.get('require_run_capture') and not context.dry_run:
@@ -27,6 +31,18 @@ class DouyinAdapter(SourceAdapter):
                 if not receipt_path.exists():
                     raise RuntimeError('Group not refreshed for this run: browser capture/voice transcription receipt missing; old snapshot refused')
                 receipt = json.loads(receipt_path.read_text())
+                validation_path = context.run_dir / 'chrome_preflight_validation.json'
+                if not validation_path.exists() or json.loads(validation_path.read_text()).get('ready') is not True:
+                    raise RuntimeError('Group preflight evidence has not passed validation')
+                validation = json.loads(validation_path.read_text())
+                diagnostics = context.run_dir / 'chrome_preflight_diagnostics.jsonl'
+                if (validation.get('run_id') != context.run_id or
+                        any(validation.get(key) != receipt.get(key) for key in ('sha256','capture_sha256')) or
+                        not diagnostics.exists() or validation.get('diagnostics_sha256') != hashlib.sha256(diagnostics.read_bytes()).hexdigest()):
+                    raise RuntimeError('Group evidence changed after validation; validate this run again')
+                capture_path = context.run_dir / 'group_capture.json'
+                if receipt.get('version') != 2 or not capture_path.exists() or receipt.get('capture_sha256') != hashlib.sha256(capture_path.read_bytes()).hexdigest():
+                    raise RuntimeError('Group DOM capture hash/version mismatch')
                 captured = datetime.fromisoformat(receipt['captured_at'].replace('Z', '+00:00'))
                 if not 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= 7200:
                     raise RuntimeError('Group capture receipt expired')

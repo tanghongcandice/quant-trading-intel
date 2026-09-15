@@ -26,19 +26,30 @@
     ["金融", new Set(["BX"])],
   ];
 
+  // The third field contains high-signal terms used to choose one exclusive
+  // primary sector. Cross-industry concepts remain searchable in the text,
+  // but must not duplicate one item into several sector cards.
   const cnSectorDefinitions = [
-    ["AI 应用 / 传媒", /AI影视|AI长剧|AI短剧|微短剧|短剧|影视|传媒|芒果|剧本|电视台/i],
-    ["银行 / 红利", /银行|大行|净息差|股息|红利|中特估/i],
-    ["煤炭 / 能源", /煤炭|动力煤|焦煤|煤价|煤业|煤电/i],
-    ["PCB / 电子材料", /PCB|覆铜板|玻纤布|建滔|电路板/i],
-    ["光通信 / 算力基础设施", /光纤|光通信|通信|光棒|光缆|光模块|CPO|液冷|服务器|算力|数据中心/i],
-    ["半导体 / 存储", /半导体|芯片|存储|DRAM|NAND|晶圆|先进封装/i],
-    ["消费电子", /苹果|华为|折叠屏|消费电子|手机|端侧AI/i],
-    ["有色金属 / 资源", /有色|黄金|铜价|铝价|锂|稀土|紫金|洛钼/i],
-    ["化工 / 新材料", /化工|新材料|涨价函|原材料|反内卷/i],
-    ["地产 / 基建", /地产|房地产|建筑|建材|基建|工程/i],
-    ["大盘 / 市场策略", /沪指|创业板|上证|深证|指数|成交|磨底|大盘|市场|仓位|波段/i],
-    ["宏观 / 政策", /PMI|PPI|CPI|政策|流动性|利率|美联储|非农/i],
+    ["半导体 / 存储", /存储|内存|DRAM|NAND|HBM|闪存|固态硬盘|存储器/i, ["存储器", "内存", "DRAM", "NAND", "HBM", "闪存", "固态硬盘"]],
+    ["半导体 / 处理器", /CPU|GPU|处理器|英特尔|英伟达|AMD|寒武纪|海光|龙芯/i, ["CPU", "GPU", "处理器", "英特尔", "英伟达", "寒武纪", "海光", "龙芯"]],
+    ["半导体 / 制造与设备", /半导体|芯片|晶圆|光刻|刻蚀|薄膜沉积|先进封装|芯片出口|半导体设备/i, ["芯片出口", "晶圆", "光刻", "刻蚀", "薄膜沉积", "先进封装", "半导体设备"]],
+    ["通信 / 光通信", /光通信|光模块|CPO|硅光|光纤|光棒|光缆|激光器|光芯片/i, ["光通信", "光模块", "CPO", "硅光", "光纤", "光棒", "光缆", "激光器", "光芯片"]],
+    ["计算基础设施", /算力|服务器|数据中心|IDC|液冷|机柜|云计算|电源/i, ["算力", "服务器", "数据中心", "IDC", "液冷", "机柜"]],
+    ["PCB / 电子材料", /PCB|覆铜板|玻纤布|电路板|建滔/i, ["PCB", "覆铜板", "玻纤布", "电路板"]],
+    ["软件 / AI 应用与传媒", /AI应用|人工智能应用|AI影视|AI长剧|AI短剧|微短剧|短剧|软件|SaaS|传媒|影视|芒果|剧本|电视台/i, ["AI应用", "人工智能应用", "微短剧", "SaaS", "软件", "传媒"]],
+    ["消费电子", /苹果|华为|小米|折叠屏|消费电子|手机|端侧AI|可穿戴/i, ["消费电子", "折叠屏", "手机", "端侧AI", "可穿戴"]],
+    ["机器人 / 工业设备", /机器人|减速器|伺服|灵巧手|工业母机|自动化设备|机械设备/i, ["机器人", "减速器", "伺服", "灵巧手", "工业母机"]],
+    ["汽车 / 新能源", /汽车|整车|智能驾驶|锂电池|固态电池|光伏|风电|储能|新能源/i, ["智能驾驶", "锂电池", "固态电池", "光伏", "风电", "储能"]],
+    ["医药 / 医疗", /医药|创新药|CXO|医疗器械|医院|中药|疫苗|药明/i, ["创新药", "CXO", "医疗器械", "中药", "疫苗", "药明"]],
+    ["消费", /消费|白酒|食品饮料|零售|旅游|酒店|免税|家电|大消费/i, ["大消费", "白酒", "食品饮料", "零售", "旅游", "酒店", "免税", "家电"]],
+    ["化工 / 新材料", /化工|农药|化肥|新材料|涨价函|原材料|反内卷/i, ["农药", "化肥", "化工", "新材料", "涨价函"]],
+    ["有色 / 资源", /有色|黄金|铜价|铝价|锂矿|稀土|紫金|洛钼/i, ["黄金", "铜价", "铝价", "锂矿", "稀土", "紫金", "洛钼"]],
+    ["能源 / 公用事业", /煤炭|动力煤|焦煤|煤价|煤业|煤电|石油|天然气|电力|公用事业/i, ["煤炭", "动力煤", "焦煤", "石油", "天然气", "电力", "公用事业"]],
+    ["地产 / 基建", /地产|房地产|建筑|建材|基建|工程机械/i, ["房地产", "地产", "建筑", "建材", "基建", "工程机械"]],
+    ["农业", /农业|种业|粮食|养殖|生猪|猪价|鸡苗|水产/i, ["农业", "种业", "粮食", "养殖", "生猪", "猪价", "鸡苗", "水产"]],
+    ["金融", /银行|保险|券商|证券|大金融|净息差|股息|红利|中特估/i, ["银行", "保险", "券商", "证券", "大金融", "净息差"]],
+    ["宏观 / 政策", /PMI|PPI|CPI|政策|流动性|利率|美联储|非农|汇率/i, ["PMI", "PPI", "CPI", "美联储", "非农", "汇率"]],
+    ["大盘 / 市场策略", /沪指|创业板|科创板|上证|深证|指数|成交量|磨底|大盘|市场情绪|仓位|波段/i, ["沪指", "创业板", "科创板", "上证", "深证", "成交量", "市场情绪", "仓位"]],
   ];
 
   const timezoneOffsets = {
@@ -378,8 +389,7 @@
 
   function sectorForItem(item) {
     if (item.market === "cn") {
-      const text = `${item.text || ""} ${item.title || ""} ${item.translatedText || ""}`;
-      return cnSectorDefinitions.find(([, pattern]) => pattern.test(text))?.[0] || "其他板块";
+      return cnPrimarySectorForItem(item);
     }
     const sectors = uniqueSorted((item.tickers || []).map((ticker) => sectorForTicker(ticker)));
     return sectors[0] || "其他板块";
@@ -489,6 +499,19 @@
   }
 
   function bindEvents() {
+    document.addEventListener("error", (event) => {
+      const image = event.target;
+      if (!(image instanceof HTMLImageElement) || !image.closest(".raw-media-grid")) return;
+      const attempt = Number(image.dataset.retry || 0);
+      if (attempt >= 2) return;
+      image.dataset.retry = String(attempt + 1);
+      window.setTimeout(() => {
+        if (!image.isConnected) return;
+        const url = new URL(image.src);
+        url.searchParams.set("reload", String(Date.now()));
+        image.src = url.href;
+      }, (attempt + 1) * 1500);
+    }, true);
     els.marketTabs.forEach((button) => {
       button.addEventListener("click", () => switchMarket(button.dataset.market));
     });
@@ -635,7 +658,7 @@
     document.body.classList.remove("image-lightbox-open");
   }
 
-  function switchView(view) {
+  function switchView(view, scrollToTop = true) {
     if (!view) return;
     state.view = view;
     els.viewTabs.forEach((button) => {
@@ -648,7 +671,7 @@
       panel.classList.toggle("active", active);
       panel.hidden = !active;
     });
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    if (scrollToTop) window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function switchMarket(market) {
@@ -884,6 +907,7 @@
     els.dailyOriginals.querySelectorAll("[data-raw-analyze]").forEach((button) => {
       button.addEventListener("click", () => openDrawer(button.dataset.rawAnalyze));
     });
+    bindRawOverflowControls();
   }
 
   function renderActiveFilterSummary(rows) {
@@ -949,7 +973,6 @@
     const hidePlaceholderTitle = item.sourceType === "discord"
       && (/^discord\s*原文$/i.test(rawTitle) || discordImageTitle.test(rawTitle));
     const original = item.sourceType === "discord" && discordImagePlaceholder.test(originalValue) ? "" : originalValue;
-    const longText = original.length > 620;
     const duplicateTitle = rawTitle && original.length >= rawTitle.length
       && original.slice(0, rawTitle.length).trim() === rawTitle.trim();
     const title = hidePlaceholderTitle || duplicateTitle ? "" : rawTitle;
@@ -968,13 +991,9 @@
           </div>
         </div>
         ${renderReplyContext(item.replyContext)}
-        ${isSubstackSummary ? renderSubstackSummary(item) : (original ? (longText
-          ? `<div class="raw-original raw-original-preview">${linkifyText(original)}</div>
-             <details class="raw-full-details">
-               <summary>展开 / 收起完整原文</summary>
-               <div class="raw-original raw-original-full">${linkifyText(original)}</div>
-             </details>`
-          : `<div class="raw-original raw-original-full">${linkifyText(original)}</div>`) : "")}
+        ${isSubstackSummary ? renderSubstackSummary(item) : (original ? `
+          <div class="raw-original raw-original-full raw-original-collapsible" data-raw-collapsible>${linkifyText(original)}</div>
+          <button class="raw-original-toggle" type="button" data-raw-toggle hidden aria-expanded="false">展开完整原文</button>` : "")}
         ${!isSubstackSummary && item.translatedText ? `
           <section class="raw-translation" aria-label="中文翻译">
             <div class="raw-translation-head"><span>中文翻译</span><small>Codex 上下文复核</small></div>
@@ -986,6 +1005,30 @@
           ${item.externalUrl ? `<a class="secondary-link" href="${escapeAttribute(item.externalUrl)}" target="_blank" rel="noreferrer">打开来源</a>` : ""}
         </div>
       </article>`;
+  }
+
+  function bindRawOverflowControls() {
+    const measure = (root = els.dailyOriginals) => {
+      root.querySelectorAll("[data-raw-collapsible]").forEach((content) => {
+        const button = content.nextElementSibling;
+        if (!button?.matches("[data-raw-toggle]")) return;
+        const expanded = content.classList.contains("is-expanded");
+        button.hidden = !expanded && content.scrollHeight <= content.clientHeight + 1;
+      });
+    };
+    els.dailyOriginals.querySelectorAll("[data-raw-toggle]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const content = button.previousElementSibling;
+        const expanded = content.classList.toggle("is-expanded");
+        button.textContent = expanded ? "收起" : "展开完整原文";
+        button.setAttribute("aria-expanded", String(expanded));
+        button.hidden = false;
+      });
+    });
+    els.dailyOriginals.querySelectorAll("details").forEach((details) => {
+      details.addEventListener("toggle", () => window.requestAnimationFrame(() => measure(details)));
+    });
+    window.requestAnimationFrame(() => measure());
   }
 
   function renderSubstackSummary(item) {
@@ -1212,7 +1255,8 @@
       let startScroll = 0;
       let dragging = false;
       scroller.addEventListener("pointerdown", (event) => {
-        if (event.target.closest("a, button, input, select, textarea, summary")) return;
+        if (event.button !== 0 || event.pointerType !== "mouse") return;
+        if (event.target.closest("a, button, input, select, textarea, summary, blockquote, p, time, .timeline-source")) return;
         dragging = true;
         startX = event.clientX;
         startScroll = scroller.scrollLeft;
@@ -1447,13 +1491,40 @@
   }
 
   function cnSectorsForItem(item) {
-    const text = `${item.translatedTitle || item.title || ""}\n${item.translatedText || item.text || ""}`;
-    const matched = cnSectorDefinitions
-      .filter(([, pattern]) => pattern.test(text))
-      .map(([sector]) => sector);
-    if (matched.length) return matched;
-    if (item.theme && item.theme !== "综合观察") return [item.theme];
-    return ["综合观察"];
+    return [cnPrimarySectorForItem(item)];
+  }
+
+  function cnPrimarySectorForItem(item) {
+    const title = String(item.translatedTitle || item.title || "");
+    const body = String(item.translatedText || item.text || "");
+    const theme = item.theme && item.theme !== "综合观察" ? String(item.theme) : "";
+    let best = null;
+    for (const definition of cnSectorDefinitions) {
+      const [sector, pattern, terms = []] = definition;
+      let score = pattern.test(title) ? 6 : 0;
+      if (pattern.test(body)) score += 1;
+      if (theme && pattern.test(theme)) score += 2;
+      for (const term of terms) {
+        const titleHits = textOccurrenceCount(title, term);
+        const bodyHits = Math.min(textOccurrenceCount(body, term), 4);
+        score += titleHits * 8 + bodyHits * (String(term).length >= 3 ? 3 : 2);
+      }
+      if (score > 0 && (!best || score > best.score)) best = { sector, score };
+    }
+    return best?.sector || (theme || "综合观察");
+  }
+
+  function textOccurrenceCount(source, term) {
+    const haystack = String(source || "").toLocaleLowerCase();
+    const needle = String(term || "").toLocaleLowerCase();
+    if (!needle) return 0;
+    let count = 0;
+    let offset = 0;
+    while ((offset = haystack.indexOf(needle, offset)) !== -1) {
+      count += 1;
+      offset += needle.length;
+    }
+    return count;
   }
 
   function buildCnSectorReason(sector, rows) {
@@ -1593,16 +1664,21 @@
   }
 
   function jumpToRawItem(itemId) {
-    if (state.view !== "feed") switchView("feed");
+    if (state.view !== "feed") switchView("feed", false);
     const target = document.getElementById(rawItemAnchor(itemId));
     if (!target) return;
-    const day = target.closest("details.raw-day");
-    if (day) day.open = true;
+    for (let ancestor = target.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      if (ancestor.tagName === "DETAILS") ancestor.open = true;
+    }
     target.classList.remove("raw-item-highlight");
     void target.offsetWidth;
     target.classList.add("raw-item-highlight");
     if (typeof target.scrollIntoView === "function") {
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: "instant", block: "start" });
+        target.setAttribute("tabindex", "-1");
+        target.focus({ preventScroll: true });
+      });
     }
     window.setTimeout(() => target.classList.remove("raw-item-highlight"), 2200);
   }

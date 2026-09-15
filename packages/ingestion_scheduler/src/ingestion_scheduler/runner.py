@@ -273,7 +273,7 @@ def _run_source(
             snapshot_ref = source.get("browser_snapshot") or (
                 source.get("fixture_file") if source.get("mode") == "browser_session" else None
             )
-            if snapshot_ref and not dry_run:
+            if snapshot_ref and not dry_run and not source.get('require_run_capture'):
                 snapshot_path = resolve_path(str(snapshot_ref), context.base_dir)
                 max_age_hours = float(source.get("max_snapshot_age_hours", 6))
                 age_hours = (time.time() - snapshot_path.stat().st_mtime) / 3600 if snapshot_path.exists() else max_age_hours + 1
@@ -314,7 +314,7 @@ def _run_source(
                         candidate_items.append(doc)
                         continue
                     try:
-                        if created >= cutoff:
+                        if created >= cutoff or source_id == 'douyin_group_yuboluo_1':
                             candidate_items.append(doc)
                     except TypeError:
                         # A timezone-less legacy timestamp is retained and
@@ -340,6 +340,12 @@ def _run_source(
                         continue
                     external_id = (item.get("external") or {}).get("id")
                     committed = _final_store_contains(final_db, source_id, external_id)
+                    group_update = False
+                    if committed and source_id == 'douyin_group_yuboluo_1':
+                        with sqlite3.connect(final_db) as conn:
+                            previous = conn.execute('SELECT content_hash,created_at FROM information_items WHERE source_id=? AND external_id=?',
+                                                    (source_id,external_id)).fetchone()
+                        group_update = previous is not None and (previous[0] != item.get('content',{}).get('hash') or previous[1] != item['timestamps']['created_at'])
                     inserted, item_id = state.upsert_item(item, context.run_id, seen_at)
                     recoverable = not inserted and not committed
                     item["id"] = item_id
@@ -355,11 +361,11 @@ def _run_source(
                     )
                     if inserted or recoverable:
                         new_count += 1
-                    else:
+                    elif not group_update:
                         duplicate_count += 1
                     # A state-only item is recoverable: the prior collection
                     # succeeded, but its final-store transaction did not.
-                    if inserted or recoverable or include_duplicates:
+                    if inserted or recoverable or group_update or include_duplicates:
                         emitted_docs.append(item)
                 append_jsonl(items_path, emitted_docs)
 

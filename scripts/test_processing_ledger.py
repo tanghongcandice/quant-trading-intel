@@ -60,10 +60,10 @@ class GroupProcessingLedgerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             db = Path(folder) / "db.sqlite"
             with sqlite3.connect(db) as conn:
-                conn.execute("CREATE TABLE information_items(id TEXT PRIMARY KEY)")
+                conn.execute("CREATE TABLE information_items(id TEXT PRIMARY KEY, source_id TEXT,external_id TEXT,raw_json TEXT)")
             self.assertEqual(reuse(blank, ledger, db)["reused_segments"], 0)
             with sqlite3.connect(db) as conn:
-                conn.execute("INSERT INTO information_items(id) VALUES(?)", (items[0]["id"],))
+                conn.execute("INSERT INTO information_items VALUES(?,?,?,?)", (items[0]["id"],items[0]['source']['id'],items[0]['external']['id'],json.dumps(items[0])))
             result = reuse(blank, ledger, db)
         self.assertEqual(result, {"reused_batches": 1, "reused_segments": 2})
         self.assertEqual([row["voice"] for row in blank["messages"]], ["第一段。", "第二段。"])

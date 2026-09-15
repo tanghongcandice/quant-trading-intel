@@ -13,6 +13,7 @@ from lxml import html
 
 
 ARTICLES = {
+    "V4XX-SQ2LHmu6Mkgk-6rAg": [(22, 33)],
     "fl-nzAnWxiTDyD4U4GxbYQ": [(12, 18)],
     "ZdPKiHGCaBGXFSnWbIFK2A": [(6, 9)],
     "ufeRUIMUNDGgedd3YXIs3Q": [(8, 23), (26, 26)],
@@ -24,6 +25,11 @@ ARTICLES = {
     "zb6ifrVgBXdSmogFAclbkA": [(7, 19)],
     "ONe1_t_GHdtLd11FVsLrxQ": [(4, 11), (13, 16)],
     "doANI7cwJeWjOq3CjAOh2g": [(6, 11)],
+    "WYGpKhi7yemeYDwA4CpEvA": [(3, 8)],
+    "NDvDFHsj6cwd89g9iNa0WA": [(13, 39)],
+    "aHaIkB2ML8EAM3vqY7HGsA": [(9, 23)],
+    "JGy0-yE5xxWxKu-PVYtZ2Q": [(12, 18)],
+    "kCyOpDLstXD0yNa9sBl1xg": [(27, 36)],
 }
 
 USER_AGENT = (

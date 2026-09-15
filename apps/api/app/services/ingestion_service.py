@@ -10,6 +10,7 @@ from app.core.db import connect
 from app.services.link_policy import suppress_link_translation
 from app.services.subscription_policy import enforce_subscription_policy
 from app.services.discord_guard import enforce, target, sid as discord_source_id, SOURCES
+from app.services.group_reconciliation import update_existing
 
 
 def utc_now_iso() -> str:
@@ -95,6 +96,7 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
     inserted = 0
     skipped = 0
     entity_count = 0
+    updated = 0
 
     with connect(db_path) as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -125,6 +127,9 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             ),
         )
         for item in items:
+            if update_existing(conn, item, actual_run_id):
+                updated += 1
+                continue
             if (item.get('source') or {}).get('id') == 'douyin_panyiyoudianshen':
                 ownership = (item.get('raw_payload') or {}).get('ownership') or {}
                 if not ownership.get('verified') or ownership.get('profile_url') != 'https://www.douyin.com/user/MS4wLjABAAAAiZFYelCAfbPcGXxkCEZEOpJPi-Fo_frPHiaEA45UerKIM-XTAXssDViEHNRu_bH2':
@@ -253,6 +258,7 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             "discord_guard": guard_stats,
             "skipped_duplicates": skipped,
             "inserted_entities": entity_count,
+            "updated_items": updated,
         }
         conn.execute(
             """

@@ -1,4 +1,19 @@
-# 最新范围修正（2026-09-07，覆盖下文旧范围）
+# v1.3.4 群聊断点流程（2026-09-15，优先于下文旧操作步骤）
+
+本节替代下文手写 `collection_evidence`、共享快照封装和仅凭 item 主键复用的旧步骤。只采已核实群主/管理员、原生转写和最终数据库权威规则不变。不是新增定时器；现有自动化每轮读取本文。
+
+1. 生成唯一 `QUANT_RUN_ID`。每个浏览器阶段开始前运行 `.venv/bin/python scripts/chrome_preflight_diagnostics.py begin --run-id <ID> --stage <阶段> --attempt <次数>`，保存返回 token。阶段完成/报错后立即运行 `end --run-id <ID> --token <token> --status success|error --summary <实际结果>`。耗时由单调时钟实测，包含工具编排时间，不是纯浏览器延迟。未结束的开始事件和最后一次失败均不算成功。禁止事后补造零耗时成功记录。
+2. 用 CUA 初始化/枚举用户已登录 Chrome，读取 `scripts/douyin_group_browser_workflow.js`，将函数定义放入授权 CUA 会话。`reconnectGroup(cua,browserId,attempt)` 每次重新枚举标签；前两次选当前聊天页，第三次在**同一个已授权 Chrome**打开新聊天页并核实群名。失败时约 3 秒、10 秒后重试，最多两次复查。若需重置工具会话，重新执行工具规定的初始化；诊断开始记录已在磁盘保留。登录/验证不可用时停止该来源，不绕过认证或改变锁屏设置。
+3. 项目根目录运行 `.venv/bin/python scripts/browser_session_bridge.py --port 8771`，在授权浏览器打开 `http://127.0.0.1:8771/group-checkpoint`（端口占用先确认既有服务，不终止未知进程）。以聊天 tab、表单 tab、本轮 ID 创建 `groupWorkflow(tab,bridge,runId)`。每次 `save()` 提交当前渲染 DOM，响应必须带正确 run_id；磁盘同时写 `runs/<ID>/group_windows/`、`group_checkpoint.json` 和 `group_checkpoint_status.json`。不使用 `/group-import` 生成新轮凭证。
+4. 每次滚动前保存。`older()` 向旧消息滚一页，`latest()` 返回最新端；动作后在**下一次 CUA 调用**执行 `save()`，确认渲染后的范围确有变化，不能将立即读到的旧 DOM 当作滚动完成。若无变化，用当前可见视口内的消息区坐标重新滚动并读取。窗口必须有重叠；中途移位/同索引内容改变会保存 `group_rejected_window.json` 并拒绝合并，改用新 ID 从最新端重建，不能删除证据继续拼接。
+5. 保存时自动先复用最终库支持的账本。`transcribeVisible()` 每次只处理一段当前可见且仍 pending 的原生语音，并立即保存；没有可见 pending 时先定位对应窗口。同轮中断后以相同 ID 重新观察即可恢复；新轮不可使用上一轮未入库文字。完整指纹不匹配时，至少先取得旧批次最前两段原生文字作为锚点；只有同发送者/角色、同日相差不超过 180 秒、旧完整时长序列及已观察文字精确匹配且最终库候选唯一，才复用旧前缀，新尾段仍要转写。歧义留待核对，绝不按时长猜文字。
+6. `ready` 由程序核验：连续索引从 0 开始、最早时间覆盖最终库游标减两小时、旧端不是半段/无日期语音批次、所有目标语音完成、至少两次最新端锚点一致且最后返回最新端。页面起初在旧端可先保存，再到最新端；未确认作者/时间的语音不算完成。新来源无游标须人工确定历史边界，不自动宣称完整。分享卡片缺实际作品链接会保留断点并明确失败；仍按下文“视频分享”规则在授权页面补证，不伪造链接。
+7. 状态 ready 后运行 `.venv/bin/python scripts/prepare_douyin_group_run.py --run-id <ID>`。它重新检查每个窗口哈希、合并结果和文字来源，生成 version 2 的 `group_capture.json`、`group_items.jsonl`、`group_receipt.json`。随后记录 `processing_ledger_reuse` 和 `group_receipt` 的实际结果（这些阶段同样先 begin 后执行再 end），执行 `.venv/bin/python scripts/chrome_preflight_diagnostics.py validate --run-id <ID>` 并检查 `ready: true`。四个阶段为 `chrome_tab_enumeration`、`group_dom_read`、`processing_ledger_reuse`、`group_receipt`；DOM 阶段仅在群名、最新端、重叠均实读成功后结束为 success。
+8. 用相同 `QUANT_RUN_ID` 启动 `scripts/run_daily_collection.sh`。群聊 adapter 只读本轮 `group_items.jsonl`，不受其他轮次覆盖共享快照影响。未完成断点会报告诊断路径；不冒充“没有新消息”，其他来源仍继续。已核实的语音扩展保留原主键和 external_id，由事务导入更新原记录与全文索引，并写 `group_revision_audit` 备份；报告分别使用实际 inserted_items、updated_items、skipped_duplicates。不重跑历史修复脚本。
+
+采集仍依赖可访问的已登录 Chrome，shell 本身不能操作原生语音菜单。按 [OpenAI 官方定时任务说明](https://learn.chatgpt.com/docs/automations?surface=app)，本地项目任务需要电脑开机且桌面应用运行；此修复不承诺浏览器失联、登录过期或系统不可交互时也能采集。
+
+# 最新范围修正（2026-09-07，以下流程细节以 v1.3.4 为准）
 
 ## 每轮 Chrome 前检可靠性规则（2026-09-08 起）
 
