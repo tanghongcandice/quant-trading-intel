@@ -234,8 +234,12 @@ class DiscordAdapter(SourceAdapter):
             elif doc.get("referencedMessage"):
                 embedded = dict(doc["referencedMessage"])
                 embedded.setdefault("id", ref_id)
-                embedded.setdefault("timestamp", doc.get("timestamp"))
-                if embedded.get("id"):
+                # A reply preview often omits its author's identity and time.
+                # Keep that preview nested on the reply, but never invent a
+                # standalone parent using the replying message's timestamp.
+                author = embedded.get("author") or {}
+                if (embedded.get("id") and embedded.get("timestamp")
+                        and any(author.get(k) for k in ("id", "name", "displayName"))):
                     parents.append(embedded)
         for parent in parents:
             # Keep the parent as a separate raw item for traceability, while

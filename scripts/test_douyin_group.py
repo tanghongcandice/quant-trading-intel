@@ -58,6 +58,7 @@ class GroupTests(unittest.TestCase):
         self.payload['messages'].pop(2)
         self.payload['messages'][2].pop('author')
         voices=[i for i in build(self.payload) if i['raw_payload']['transcription']['audio_count']]
-        self.assertEqual(len(voices),3)
+        # A gap invalidates inherited sender/role until an explicit boundary.
+        self.assertEqual(len(voices),1)
 
 if __name__=='__main__':unittest.main()

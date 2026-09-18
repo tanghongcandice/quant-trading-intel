@@ -6,7 +6,7 @@
   <string>com.hong-dashboard.api</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/.venv/bin/python</string>
+    <string>/Users/mac/Projects/quant-trading-intel/.venv/bin/python</string>
     <string>-m</string>
     <string>uvicorn</string>
     <string>app.main:app</string>
@@ -16,7 +16,7 @@
     <string>8000</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/apps/api</string>
+  <string>/Users/mac/Projects/quant-trading-intel/apps/api</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -24,8 +24,8 @@
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>StandardOutPath</key>
-  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/logs/api-service.log</string>
+  <string>/Users/mac/Projects/quant-trading-intel/logs/api-service.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/mac/Documents/Codex/2026-07-26/github-tanghongcandice-quant-trading-intel-premarket/quant-trading-intel/logs/api-service.error.log</string>
+  <string>/Users/mac/Projects/quant-trading-intel/logs/api-service.error.log</string>
 </dict>
 </plist>

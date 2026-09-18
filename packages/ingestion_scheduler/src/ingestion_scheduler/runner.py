@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import sqlite3
 from datetime import datetime, timedelta
@@ -55,6 +56,8 @@ def config_base_dir(config: dict[str, Any], config_path: Path) -> Path:
 
 def _cursor_eligible(item: dict[str, Any], source: dict[str, Any]) -> bool:
     """Exclude Discord context-only authors from successful watermarks."""
+    if ((item.get('raw_payload') or {}).get('group_capture_progress') or {}).get('complete') is False:
+        return False
     if source.get("type") != "discord":
         return True
     targets = [str(value).strip().casefold() for value in source.get("target_authors") or [] if str(value).strip()]
@@ -314,7 +317,7 @@ def _run_source(
                         candidate_items.append(doc)
                         continue
                     try:
-                        if created >= cutoff or source_id == 'douyin_group_yuboluo_1':
+                        if created >= cutoff or source_id == 'douyin_group_yuboluo_1' or ((doc.get('raw_payload') or {}).get('tweet') or {}).get('retry_truncated') or (source_id in {'douyin_jiujiujiucai','douyin_panyiyoudianshen'} and (doc.get('raw_payload') or {}).get('retry_transcription')):
                             candidate_items.append(doc)
                     except TypeError:
                         # A timezone-less legacy timestamp is retained and
@@ -341,6 +344,17 @@ def _run_source(
                     external_id = (item.get("external") or {}).get("id")
                     committed = _final_store_contains(final_db, source_id, external_id)
                     group_update = False
+                    if committed and source_id in {'douyin_jiujiujiucai','douyin_panyiyoudianshen'}:
+                        p = item.get('raw_payload') or {}
+                        with sqlite3.connect(final_db) as conn:
+                            old = conn.execute('SELECT raw_json FROM information_items WHERE source_id=? AND external_id=?', (source_id,external_id)).fetchone()
+                        prior_status = ((json.loads(old[0]).get('raw_payload') or {}).get('transcription') or {}).get('status') if old else None
+                        group_update = bool(prior_status in {'no_audio_title_only','no_speech_title_only','reviewed_truncated','pending_retry'} and p.get('retry_transcription') and (p.get('transcription') or {}).get('status') == 'complete')
+                    if committed and (item.get('source') or {}).get('type') == 'x':
+                        with sqlite3.connect(final_db) as conn:
+                            old = conn.execute('SELECT content_text,raw_json FROM information_items WHERE source_id=? AND external_id=?', (source_id,external_id)).fetchone()
+                        payload = json.loads(old[1]).get('raw_payload', {}) if old else {}
+                        group_update = bool(old and (payload.get('source_truncated') or payload.get('tweet', {}).get('source_truncated')) and len(item.get('content', {}).get('text') or '') > len(old[0] or ''))
                     if committed and source_id == 'douyin_group_yuboluo_1':
                         with sqlite3.connect(final_db) as conn:
                             previous = conn.execute('SELECT content_hash,created_at FROM information_items WHERE source_id=? AND external_id=?',
@@ -406,7 +420,7 @@ def _run_source(
             return {
                 "id": source_id,
                 "type": source_type,
-                "status": "success",
+                "status": "partial_failure" if result.stats.get('coverage_complete') is False else "success",
                 "attempt": attempt,
                 "item_count": item_count,
                 "candidate_count": len(candidate_items),

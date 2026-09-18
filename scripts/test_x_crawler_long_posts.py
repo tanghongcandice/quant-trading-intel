@@ -54,7 +54,29 @@ def test_normalize_preserves_hydration_marker() -> None:
     assert doc["detail_hydrated"] is True
 
 
+def test_quoted_card_show_more_is_excluded() -> None:
+    helper_source = HELPER.read_text(encoding="utf-8")
+    assert "primaryTextContainer.querySelectorAll" in helper_source
+    assert "!node.closest('div[role=\"link\"]')" in helper_source
+    assert "explicitMore = /(?:Show more" not in helper_source
+
+
+def test_closing_delimiter_can_end_a_complete_long_post() -> None:
+    helper_source = HELPER.read_text(encoding="utf-8")
+    assert "|[\\]）)'”」』])$" in helper_source
+
+
+def test_detail_stable_unpunctuated_post_is_not_forced_pending() -> None:
+    helper_source = HELPER.read_text(encoding="utf-8")
+    assert "detail_hydration_reason: explicitMore ? 'explicit_more'" in helper_source
+    assert 'hydrated.get("detail_hydration_reason") == "explicit_more"' in helper_source
+    assert 'bool(hydrated.get("detail_hydration_candidate"))' not in helper_source
+
+
 if __name__ == "__main__":
     test_detail_extraction_keeps_longest_rendering()
     test_normalize_preserves_hydration_marker()
+    test_quoted_card_show_more_is_excluded()
+    test_closing_delimiter_can_end_a_complete_long_post()
+    test_detail_stable_unpunctuated_post_is_not_forced_pending()
     print("x crawler long-post tests passed")

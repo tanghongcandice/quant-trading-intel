@@ -14,6 +14,7 @@ class Tests(unittest.TestCase):
   b=item('discord_club500_edgerunner_messages');b['relations']={'is_reply':True};self.assertFalse(duplicate(a,b))
   b=item('discord_club500_edgerunner_messages');a['raw_payload']={'media':{'static_images':[{'sha256':'a'}]}};b['raw_payload']={'media':{'static_images':[{'sha256':'b'}]}};self.assertFalse(duplicate(a,b))
   b['author']={'display_name':'Dalin'};self.assertFalse(target(b))
+ @unittest.skipUnless((ROOT/'data/quant_intel.sqlite').is_file(), 'Local historical database integration test; not shipped with releases')
  def test_live_copy(self):
   with tempfile.TemporaryDirectory() as d:
    db=sqlite3.connect(Path(d)/'test.sqlite');db.row_factory=sqlite3.Row

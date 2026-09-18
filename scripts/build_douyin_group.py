@@ -49,7 +49,7 @@ def paragraphs(parts, starts):
             result[-1] += text
     return '\n\n'.join(result)
 
-def build(payload):
+def build(payload, allow_partial=False):
     if payload.get('group_name') != GROUP:
         raise ValueError('Wrong group')
     captured = datetime.fromisoformat(payload['captured_at'].replace('Z', '+00:00')).astimezone(TZ)
@@ -112,11 +112,17 @@ def build(payload):
 
     def flush():
         if voice_run:
-            emit(voice_run[:], True)
+            if all(p.get('voice') for p in voice_run):
+                emit(voice_run[:], True)
             voice_run.clear()
 
+    previous_index = None
     for row in rows:
         r = dict(row)
+        if previous_index is not None and previous_index - r['index'] != 1:
+            flush()
+            current_time = current_author = current_speaker = current_role = current_topic = None
+        previous_index = r['index']
         if r.get('resolved_time') or r.get('time'):
             next_time = r.get('resolved_time') or resolve_time(r['time'], captured)
             if next_time != current_time: flush()
@@ -141,9 +147,11 @@ def build(payload):
             flush()
             continue
         if not current_time:
+            if allow_partial:
+                continue
             raise ValueError('Oldest row needs an observed date separator')
         if r.get('duration'):
-            if not r.get('voice'): raise ValueError('Untranscribed voice: '+str(r['index']))
+            if not r.get('voice') and not allow_partial: raise ValueError('Untranscribed voice: '+str(r['index']))
             if not current_author: raise ValueError('Voice sender is unknown')
             if voice_run and voice_run[-1]['index'] - r['index'] != 1:
                 flush()
@@ -158,6 +166,8 @@ def build(payload):
         current_topic = body.strip() if body.strip() in {'周复盘', '日复盘', '盘前', '盘后复盘'} else None
         r['body'] = body
         r['media_images'] = [i for i in r.get('images',[]) if 'aweme-avatar' not in i['url']]
+        if allow_partial and r.get('message_kind') == 'video_share' and not r.get('shared_video'):
+            continue
         emit([r])
     flush()
     return items

@@ -41,21 +41,53 @@ def signature(row):
             [i.get('url', '').split('?', 1)[0] for i in row.get('images', [])]]
 
 
+def alignment_shift(rows, incoming):
+    """Accept only a unique contiguous overlap with a non-duration anchor.
+
+    Positive shifts rebase saved rows into the new live index coordinate system.
+    Duration-only repetitions are deliberately insufficient evidence for rebasing.
+    """
+    common = set(rows) & set(incoming)
+    if common and all(signature(rows[i]) == signature(incoming[i]) for i in common):
+        return 0
+    candidates = set()
+    for old_i, old in rows.items():
+        if old.get('duration') or not old.get('text'):
+            continue
+        for new_i, new in incoming.items():
+            if signature(old) == signature(new):
+                candidates.add(new_i - old_i)
+    valid = []
+    for shift in candidates:
+        if shift < 0:
+            continue  # deletion/reordering requires explicit review
+        overlap = sorted(i for i in incoming if i - shift in rows)
+        if len(overlap) < 3 or overlap != list(range(overlap[0], overlap[-1] + 1)):
+            continue
+        if all(signature(rows[i-shift]) == signature(incoming[i]) for i in overlap):
+            valid.append(shift)
+    if len(valid) != 1:
+        if not common and not candidates:
+            raise ValueError('Window has no overlap; return to previous visible boundary')
+        raise ValueError('DOM indexes shifted or message changed; ambiguous overlap, return to a text/time boundary')
+    return valid[0]
+
+
 def merge_windows(windows):
     rows = {}
     for window in windows:
         incoming = {int(row['index']): copy.deepcopy(row) for row in window['messages']}
         if len(incoming) != len(window['messages']):
             raise ValueError('Duplicate DOM indexes')
-        common = set(rows) & set(incoming)
-        if rows and not common:
-            raise ValueError('Window has no overlap; return to previous visible boundary')
-        for index in common:
-            if signature(rows[index]) != signature(incoming[index]):
-                raise ValueError('DOM indexes shifted or message changed; start a new capture run')
+        if rows:
+            shift = alignment_shift(rows, incoming)
+            if shift:
+                rows = {i + shift: dict(row, index=i + shift) for i, row in rows.items()}
         for index, row in incoming.items():
             if index in rows and not row.get('voice'):
                 row['voice'] = rows[index].get('voice', '')
+            if index in rows and not row.get('shared_video') and rows[index].get('shared_video'):
+                row['shared_video'] = rows[index]['shared_video']
             if row.get('time'):
                 row['resolved_time'] = resolve_time(row['time'], stamp(window['captured_at']).astimezone(TZ))
             rows[index] = row
@@ -136,7 +168,7 @@ def checkpoint(root, run_id, window):
     result = completeness(payload, final_cursor)
     latest_windows = [w for w in windows if w.get('at_latest') and any(int(r['index']) == 0 for r in w['messages'])]
     anchor = lambda w: next(signature(r) for r in w['messages'] if int(r['index']) == 0)
-    stable = len(latest_windows) >= 2 and anchor(latest_windows[0]) == anchor(latest_windows[-1])
+    stable = len(latest_windows) >= 2 and anchor(latest_windows[-2]) == anchor(latest_windows[-1])
     # Last window must return to the latest end after overlap and transcription.
     stable = stable and window.get('at_latest') is True
     if not stable: result['errors'].append('Recheck latest anchor after overlap/transcription')
@@ -146,17 +178,21 @@ def checkpoint(root, run_id, window):
         'earliest_checked':result['earliest_checked'],
         'windows':[{'file':f'group_windows/{i:06d}.json','sha256':digest(w)} for i,w in enumerate(windows)]}
     _write_atomic(folder / 'group_checkpoint.json', payload)
+    from group_retry_queue import sync
+    retry = sync(root, payload, run_id)
+    result['pending_video_indexes'] = retry['pending_video_indexes']
+    result['retry_queue'] = retry
     result.update(reused, run_id=run_id, raw_messages=len(rows), ready=not result['errors'])
     _write_atomic(folder / 'group_checkpoint_status.json', result)
     return result
 
 
-def validate_capture(payload, root, run_id):
+def validate_capture(payload, root, run_id, allow_partial=False, historical=False):
     ev = payload.get('collection_evidence') or {}
     if ev.get('version') != 2 or ev.get('run_id') != run_id:
         raise ValueError('A version-2 same-run DOM checkpoint is required')
     if payload.get('group_name') != GROUP: raise ValueError('Wrong group')
-    if not 0 <= (datetime.now(timezone.utc)-stamp(payload['captured_at'])).total_seconds() <= 7200:
+    if not historical and not 0 <= (datetime.now(timezone.utc)-stamp(payload['captured_at'])).total_seconds() <= 7200:
         raise ValueError('Capture stale or future-dated')
     windows = []
     for entry in ev.get('windows') or []:
@@ -175,12 +211,15 @@ def validate_capture(payload, root, run_id):
         raise ValueError('Capture differs from observed DOM windows')
     if [r.get('voice','') for r in actual] != [r.get('voice','') for r in expected]:
         raise ValueError('Transcript lacks observed DOM or final-store reuse provenance')
+    if [r.get('shared_video') for r in actual] != [r.get('shared_video') for r in expected]:
+        raise ValueError('Video link lacks observed window provenance')
     if payload['captured_at'] != windows[-1]['captured_at']:
         raise ValueError('Capture timestamp differs from final observed window')
     last = windows[-1]
     anchors = lambda w: [signature(r) for r in w['messages'] if int(r['index']) == 0]
     latest = [w for w in windows if w.get('at_latest') and anchors(w)]
-    if len(latest) < 2 or not last.get('at_latest') or anchors(latest[0]) != anchors(last):
+    latest_verified = len(latest) >= 2 and last.get('at_latest') and anchors(latest[-2]) == anchors(last)
+    if not latest_verified and not allow_partial:
         raise ValueError('Latest anchor changed or not rechecked')
     # Use the earlier, captured cursor as the required baseline. A concurrent
     # import may move it forward, but never justify less overlap than observed.
@@ -189,7 +228,9 @@ def validate_capture(payload, root, run_id):
     if not baseline or (current and stamp(baseline) > stamp(current)):
         raise ValueError('Invalid final-store cursor baseline')
     result = completeness(payload, baseline)
-    if result['errors']: raise ValueError('; '.join(result['errors']))
+    if not latest_verified:
+        result['errors'].append('Recheck latest anchor after overlap/transcription')
+    if result['errors'] and not allow_partial: raise ValueError('; '.join(result['errors']))
     return result
 
 

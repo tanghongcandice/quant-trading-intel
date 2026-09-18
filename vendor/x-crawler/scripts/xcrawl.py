@@ -51,11 +51,14 @@ EXTRACT_TWEETS_JS = r"""
     const match = String(label).match(/[\d,.]+\s*[KMB万亿]?/i);
     return match ? match[0].replace(/\s+/g, '') : null;
   };
-  const time = article.querySelector('time[datetime]');
+  // A quoted card precedes the detail post's own timestamp in DOM order.
+  // Never take its permalink as the enclosing post's identity.
+  const time = Array.from(article.querySelectorAll('time[datetime]'))
+    .find(t => !t.closest('div[role="link"]')) || null;
   let statusAnchor = time ? time.closest('a[href*="/status/"]') : null;
   if (!statusAnchor) {
     statusAnchor = Array.from(article.querySelectorAll('a[href*="/status/"]'))
-      .find((a) => /\/[^/]+\/status\/\d+/.test(a.getAttribute('href') || '')) || null;
+      .find((a) => !a.closest('div[role="link"]') && /\/[^/]+\/status\/\d+/.test(a.getAttribute('href') || '')) || null;
   }
   const href = statusAnchor ? statusAnchor.getAttribute('href') || '' : '';
   const match = href.match(/\/([^/?#]+)\/status\/(\d+)/);
@@ -76,7 +79,16 @@ EXTRACT_TWEETS_JS = r"""
     /(?:Subscribe to (?:read|see|view|unlock)|Only (?:subscribers|Subscribers) can|订阅(?:以|后)(?:查看|阅读)|仅(?:限)?订阅者(?:可见|可查看))/i
   );
   const renderedText = textNode ? String(textNode.innerText || '').trim() : '';
-  const explicitMore = /(?:Show more|显示更多|閱讀更多)/i.test(String(article.innerText || ''));
+  // The enclosing article may contain a quoted-post card with its own
+  // "Show more" control. Only a control belonging to the primary post is
+  // evidence that the primary text is truncated.
+  const primaryTextContainer = textNode ? textNode.parentElement : null;
+  const explicitMore = Boolean(primaryTextContainer) && Array.from(
+    primaryTextContainer.querySelectorAll('[role="button"], button, a')
+  ).some((node) =>
+    /^(?:Show more|显示更多|閱讀更多)$/i.test(String(node.innerText || node.textContent || '').trim()) &&
+    !node.closest('div[role="link"]')
+  );
 
   const links = textNode ? Array.from(textNode.querySelectorAll('a[href]'))
     .map(a => abs(a.getAttribute('href'))).filter(Boolean) : [];
@@ -96,11 +108,18 @@ EXTRACT_TWEETS_JS = r"""
     id_str: id,
     subscription_preview: Boolean(subscriptionEvidence),
     subscription_evidence: subscriptionEvidence ? subscriptionEvidence[0] : null,
-    url: abs(href),
+    url: `https://x.com/${username}/status/${id}`,
     date: time ? time.getAttribute('datetime') : null,
     rawContent: renderedText,
     detail_hydration_candidate: !subscriptionEvidence && (
-      explicitMore || (renderedText.length >= 250 && !/[.!?。！？…][\]）)'”」』]*$/.test(renderedText))
+      explicitMore || (renderedText.length >= 250 && !/(?:[.!?。！？…][\]）)'”」』]*|[\]）)'”」』])$/.test(renderedText))
+    ),
+    // A missing terminal punctuation mark is only a reason to open the detail
+    // page. Once the same target post has stabilized there, it is not proof
+    // of truncation. An explicit primary-post “Show more” remains proof.
+    detail_hydration_reason: explicitMore ? 'explicit_more' : (
+      renderedText.length >= 250 && !/(?:[.!?。！？…][\]）)'”」』]*|[\]）)'”」』])$/.test(renderedText)
+        ? 'heuristic_unfinished_ending' : null
     ),
     lang: textNode ? textNode.getAttribute('lang') : null,
     user: {
@@ -305,7 +324,7 @@ async def _extract_requested_tweet(page: Page, tweet_id: str) -> dict[str, Any] 
     """Wait for a detail page to settle and return its longest matching rendering."""
     longest: dict[str, Any] | None = None
     stable_rounds = 0
-    for _ in range(5):
+    for _ in range(12):
         matches = [row for row in await _extract_visible(page) if str(row.get("id") or "") == tweet_id]
         current = max(matches, key=lambda row: len(str(row.get("rawContent") or "")), default=None)
         if current is not None:
@@ -316,9 +335,9 @@ async def _extract_requested_tweet(page: Page, tweet_id: str) -> dict[str, Any] 
                 stable_rounds = 0
             else:
                 stable_rounds += 1
-            if stable_rounds >= 2:
+            if stable_rounds >= 2 and not current.get("detail_hydration_candidate"):
                 break
-        await page.wait_for_timeout(350)
+        await page.wait_for_timeout(750)
     return longest
 
 
@@ -334,19 +353,34 @@ async def _hydrate_public_long_posts(page: Page, found: dict[str, dict[str, Any]
     detail_page = await page.context.new_page()
     try:
         for tweet_id, preview in candidates:
-            await _goto(detail_page, f"https://x.com/i/status/{tweet_id}")
             try:
+                await _goto(detail_page, preview.get("url") or f"https://x.com/i/status/{tweet_id}")
+                if not await _is_authenticated(detail_page):
+                    raise RuntimeError("X detail login/session unavailable; reauthenticate without bypassing challenges")
                 await detail_page.locator('article[data-testid="tweet"]').first.wait_for(
                     state="visible", timeout=15_000
                 )
                 hydrated = await _extract_requested_tweet(detail_page, tweet_id)
-            except Exception:
+            except Exception as exc:
                 hydrated = None
+                preview["detail_hydration_error"] = f"{type(exc).__name__}: {exc}"
             if hydrated and len(str(hydrated.get("rawContent") or "")) > len(
                 str(preview.get("rawContent") or "")
             ):
                 hydrated["detail_hydrated"] = True
                 found[tweet_id] = hydrated
+            final = found[tweet_id]
+            # A long post may intentionally end without punctuation. The
+            # punctuation heuristic triggers a detail visit, but a stable
+            # detail rendering is accepted unless the primary post still has
+            # its own explicit “Show more” control.
+            incomplete = not hydrated or hydrated.get("detail_hydration_reason") == "explicit_more"
+            final["source_truncated"] = incomplete
+            final["detail_hydration_status"] = "pending_retry" if incomplete else "complete"
+            if incomplete:
+                final.setdefault("detail_hydration_error", "Detail page did not yield a complete target post")
+                print(json.dumps({"tweet_id":tweet_id,"status":"pending_retry",
+                                  "error":final["detail_hydration_error"]}), file=sys.stderr)
     finally:
         await detail_page.close()
 

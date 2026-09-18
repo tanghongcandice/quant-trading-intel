@@ -95,6 +95,7 @@
     tickerFilter: document.getElementById("tickerFilter"),
     tickerField: document.getElementById("tickerField"),
     sectorFilter: document.getElementById("sectorFilter"),
+    fulltextSearch: document.getElementById("fulltextSearch"),
     dailyOriginals: document.getElementById("dailyOriginals"),
     rawReviewHint: document.getElementById("rawReviewHint"),
     reviewStartDate: document.getElementById("reviewStartDate"),
@@ -124,6 +125,8 @@
   let minMs = NaN;
   let maxMs = NaN;
   let filteredItems = [];
+  let searchMatches = [];
+  let activeSearchMatch = -1;
   let apiAvailable = false;
   const apiDetailCache = new Map();
   const apiContextCache = new Map();
@@ -140,6 +143,17 @@
     fillFilterOptions();
     fillReviewDateRange(state.reviewRangeSelected);
     render();
+    const rawId = new URLSearchParams(window.location.search).get('raw');
+    const selected = rawId && items.find(item => item.id === rawId);
+    if (selected) {
+      switchMarket(selected.market);
+      const day = toLocalParts(selected.createdMs, state.timezone).date;
+      state.reviewStartDate = state.reviewEndDate = day;
+      state.reviewRangeSelected = true;
+      els.reviewStartDate.value = els.reviewEndDate.value = day;
+      render();
+      jumpToRawItem(rawId);
+    }
   }
 
   async function loadItems() {
@@ -499,6 +513,18 @@
   }
 
   function bindEvents() {
+    els.fulltextSearch.addEventListener('input', debounce(() => {
+      if (state.query === els.fulltextSearch.value) return;
+      state.query = els.fulltextSearch.value;
+      render();
+    }, 180));
+    els.fulltextSearch.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.isComposing) return;
+      event.preventDefault();
+      navigateSearchMatch(event.shiftKey ? -1 : 1);
+    });
+    document.getElementById('searchMatchPrev').addEventListener('click', () => navigateSearchMatch(-1));
+    document.getElementById('searchMatchNext').addEventListener('click', () => navigateSearchMatch(1));
     document.addEventListener("error", (event) => {
       const image = event.target;
       if (!(image instanceof HTMLImageElement) || !image.closest(".raw-media-grid")) return;
@@ -580,6 +606,8 @@
 
 
     els.resetFilters.addEventListener("click", () => {
+      state.query = '';
+      els.fulltextSearch.value = '';
       state.sources.clear();
       state.authors.clear();
       state.ticker = "";
@@ -671,6 +699,7 @@
       panel.classList.toggle("active", active);
       panel.hidden = !active;
     });
+    refreshSearchMatches();
     if (scrollToTop) window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -758,6 +787,84 @@
     renderSourceInsights(analysisItems);
     renderTickerHistory(analysisItems);
     renderActiveFilterSummary(analysisItems);
+    highlightSearchMatches();
+    refreshSearchMatches();
+  }
+
+  function highlightSearchMatches() {
+    const terms = [...new Set(state.query.trim().split(/\s+/).filter(Boolean))].sort((a,b) => b.length-a.length);
+    if (!terms.length) { refreshSearchMatches(); return; }
+    const pattern = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'giu');
+    for (const root of [els.dailyOriginals, els.sourceInsightTables, els.tickerHistory]) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.parentElement.closest('button, nav, script, style, mark')) continue;
+        pattern.lastIndex = 0;
+        if (pattern.test(node.data)) nodes.push(node);
+      }
+      for (const node of nodes) {
+        const fragment = document.createDocumentFragment();
+        let cursor = 0;
+        pattern.lastIndex = 0;
+        for (const match of node.data.matchAll(pattern)) {
+          fragment.append(node.data.slice(cursor, match.index));
+          const mark = document.createElement('mark');
+          mark.className = 'search-match';
+          mark.textContent = match[0];
+          fragment.append(mark);
+          cursor = match.index + match[0].length;
+        }
+        fragment.append(node.data.slice(cursor));
+        const parent = node.parentElement;
+        node.replaceWith(fragment);
+        for (let el = parent; el && el !== root; el = el.parentElement) {
+          if (el.tagName === 'DETAILS') el.open = true;
+          if (el.matches('[data-raw-collapsible]')) {
+            el.classList.add('is-expanded');
+            const toggle = el.nextElementSibling;
+            if (toggle?.matches('[data-raw-toggle]')) {
+              toggle.hidden = false;
+              toggle.textContent = '收起';
+              toggle.setAttribute('aria-expanded', 'true');
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function refreshSearchMatches() {
+    searchMatches.forEach(mark => mark.classList.remove('search-match-current'));
+    searchMatches = [...document.querySelectorAll('.search-match')].filter(mark => !mark.closest('[hidden]'));
+    activeSearchMatch = -1;
+    updateSearchMatchCount();
+  }
+
+  function updateSearchMatchCount() {
+    document.getElementById('searchMatchCount').textContent = state.query.trim()
+      ? `${activeSearchMatch + 1} / ${searchMatches.length} 处` : '';
+    for (const id of ['searchMatchPrev', 'searchMatchNext']) document.getElementById(id).disabled = !searchMatches.length;
+  }
+
+  function navigateSearchMatch(direction) {
+    if (state.query !== els.fulltextSearch.value) {
+      state.query = els.fulltextSearch.value;
+      render();
+    }
+    if (!searchMatches.length) return;
+    searchMatches[activeSearchMatch]?.classList.remove('search-match-current');
+    activeSearchMatch = activeSearchMatch < 0
+      ? (direction > 0 ? 0 : searchMatches.length - 1)
+      : (activeSearchMatch + direction + searchMatches.length) % searchMatches.length;
+    const mark = searchMatches[activeSearchMatch];
+    for (let el = mark.parentElement; el; el = el.parentElement) {
+      if (el.tagName === 'DETAILS') el.open = true;
+    }
+    mark.classList.add('search-match-current');
+    mark.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    updateSearchMatchCount();
   }
 
   function withinReviewRange(item) {
@@ -769,6 +876,7 @@
 
   function filterReviewItems() {
     return items.filter((item) => {
+      if (!matchesFulltext(item)) return false;
       if (item.market !== state.market) return false;
       if (!withinReviewRange(item)) return false;
       if (state.sources.size && !state.sources.has(item.sourceId)) return false;
@@ -845,8 +953,16 @@
     }
   }
 
+  function matchesFulltext(item) {
+    const normalize = value => String(value || '').normalize('NFKC').toLocaleLowerCase();
+    const words = normalize(state.query).trim().split(/\s+/).filter(Boolean);
+    const text = [item.title, item.text, item.translatedTitle, item.translatedText].map(normalize).join('\n');
+    return words.every(word => text.includes(word));
+  }
+
   function filterItems() {
     return items.filter((item) => {
+      if (!matchesFulltext(item)) return false;
       if (item.market !== state.market) return false;
       if (!withinReviewRange(item)) return false;
       if (state.sources.size && !state.sources.has(item.sourceId)) return false;
@@ -917,6 +1033,7 @@
     if (state.sources.size) filters.push(`来源：${Array.from(state.sources).map(sourceLabel).join("、")}`);
     if (state.ticker) filters.push(`标的：${state.ticker}`);
     if (state.sector) filters.push(`板块：${state.sector}`);
+    if (state.query.trim()) filters.push(`全文：${state.query.trim()}`);
     els.activeFilterSummary.innerHTML = `
       <span class="result-count"><strong>${rows.length}</strong> 条可分析信息</span>
       ${filters.map((filter) => `<span class="filter-chip">${escapeHtml(filter)}</span>`).join("")}`;
@@ -1171,14 +1288,28 @@
       panelId: `history-sector-panel-${sectorIndex}`,
       groupKey: `${sectorIndex}`
     }));
+    const directoryGroups = [
+      ['市场与宏观', ['大盘 / 市场策略', '大盘与 ETF', '宏观 / 政策']],
+      ['半导体', ['半导体 / 处理器', 'AI 芯片与设备', '半导体 / 存储', '存储', '半导体 / 制造与设备', '先进封装 / 材料']],
+      ['通信与计算', ['通信 / 光通信', '光通信 / CPO', '计算基础设施', 'Neocloud / 算力能源']],
+      ['软件与应用', ['软件 / AI 应用与传媒', '云计算 / 软件平台', '特殊事件 / AI 平台']],
+      ['制造与科技硬件', ['PCB / 电子材料', '消费电子', '机器人 / 工业设备', '汽车 / 新能源', '商业航天']],
+      ['资源与基础产业', ['有色 / 资源', '稀土材料', '能源 / 公用事业', '化工 / 新材料', '地产 / 基建', '农业']],
+      ['消费、医疗与金融', ['消费', '消费与应用', '医药 / 医疗', '金融']],
+    ];
+    const assigned = new Set(directoryGroups.flatMap(([, names]) => names));
+    directoryGroups.push(['其他观察', preparedSectors.map(s => s.sector).filter(s => !assigned.has(s))]);
     const directory = preparedSectors.length ? `
       <nav class="history-directory" aria-label="标的历史快速目录">
-          <div class="history-directory-head"><strong>快速目录</strong><span>按板块跳转</span></div>
+          <div class="history-directory-head"><strong>行业目录</strong><span>按行业归组 · 点击二级板块跳转</span></div>
         <div class="history-directory-groups">
-          ${preparedSectors.map(({ sector, sectorId }) => `
-            <div class="history-directory-group">
-              <a class="history-directory-sector" href="#${escapeAttribute(sectorId)}">${escapeHtml(sector)}</a>
-            </div>`).join("")}
+          ${directoryGroups.map(([group, names]) => {
+            const children = names.map(name => preparedSectors.find(s => s.sector === name)).filter(Boolean);
+            if (!children.length) return '';
+            return `<section class="history-directory-group"><h4>${escapeHtml(group)}</h4><ul>
+              ${children.map(({sector, sectorId}) => `<li><a href="#${escapeAttribute(sectorId)}">${escapeHtml(group === '半导体' ? sector.replace(/^半导体 \/ /, '') : sector)}</a></li>`).join('')}
+            </ul></section>`;
+          }).join('')}
         </div>
       </nav>` : "";
     const history = preparedSectors.map(({ sector, sectorId, sectorRows, groupKey, panelId }) => {
@@ -1659,7 +1790,26 @@
 
   function bindRawItemJumpButtons(root = els.sourceInsightTables) {
     root.querySelectorAll("[data-jump-raw]").forEach((button) => {
-      button.addEventListener("click", () => jumpToRawItem(button.dataset.jumpRaw));
+      const item = items.find(item => item.id === button.dataset.jumpRaw);
+      if (root === els.tickerHistory && item?.sourceType === 'douyin' && item.title && /\/video\/\d+/.test(item.url || item.externalUrl || '')) {
+        const card = button.closest('.history-day-item, .timeline-event-card');
+        if (card && !card.querySelector('.history-video-title')) {
+          const title = document.createElement('h4');
+          title.className = 'history-video-title';
+          title.textContent = item.title;
+          card.querySelector('blockquote')?.before(title);
+        }
+      }
+      const link = document.createElement('a');
+      const url = new URL(window.location.href);
+      url.searchParams.set('raw', button.dataset.jumpRaw);
+      url.hash = rawItemAnchor(button.dataset.jumpRaw);
+      link.href = url.href;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = button.className;
+      link.textContent = '在新标签页查看原文 ↗';
+      button.replaceWith(link);
     });
   }
 
@@ -2284,6 +2434,7 @@ ${formatPromptItems(relatedItems)}
   }
 
   function compactText(text, limit) {
+    if (state.query.trim()) return String(text || '');
     const clean = String(text || "").replace(/\s+/g, " ").trim();
     return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
   }

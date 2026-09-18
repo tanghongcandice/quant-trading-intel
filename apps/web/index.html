@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Hong dashboard</title>
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./src/styles.css?v=20260903-image-lightbox-6">
+  <link rel="stylesheet" href="./src/styles.css?v=20260916-search-navigation">
 </head>
 <body>
   <div id="app">
@@ -55,6 +55,7 @@
             <div class="field date-clear-field"><label aria-hidden="true">日期范围</label><button id="clearReviewRange" class="text-btn filter-clear-date" type="button">查看全部日期</button></div>
             <div class="field" id="tickerField"><label for="tickerFilter">标的</label><select id="tickerFilter"></select></div>
             <div class="field sector-field"><label for="sectorFilter">板块</label><select id="sectorFilter"></select></div>
+            <div class="field fulltext-field"><label for="fulltextSearch">搜索全文</label><div class="fulltext-control"><input id="fulltextSearch" type="search" placeholder="标题、原文、翻译 · Enter 下一处" autocomplete="off"><span id="searchMatchCount" role="status" aria-live="polite"></span><button id="searchMatchPrev" type="button" aria-label="上一处匹配（Shift+Enter）" disabled>↑</button><button id="searchMatchNext" type="button" aria-label="下一处匹配（Enter）" disabled>↓</button></div></div>
 
 
 
@@ -101,6 +102,6 @@
       </section>
     </aside>
   </div>
-  <script src="./src/app.js?v=20260915-media-history-fix"></script>
+  <script src="./src/app.js?v=20260916-search-navigation"></script>
 </body>
 </html>

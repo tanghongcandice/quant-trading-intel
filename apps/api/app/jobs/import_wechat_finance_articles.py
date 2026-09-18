@@ -13,6 +13,8 @@ from lxml import html
 
 
 ARTICLES = {
+    "AuZWoqxEtOH8CMX2cDhxpA": [(6, 14)],
+    "8iEAq-xoSPr_ZfGMu_t1Xw": [(13, 31)],
     "V4XX-SQ2LHmu6Mkgk-6rAg": [(22, 33)],
     "fl-nzAnWxiTDyD4U4GxbYQ": [(12, 18)],
     "ZdPKiHGCaBGXFSnWbIFK2A": [(6, 9)],

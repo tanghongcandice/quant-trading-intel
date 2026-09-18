@@ -25,8 +25,9 @@ async function reconnectGroup(cua, browserId, attempt) {
   return tab;
 }
 
-function groupWorkflow(tab, bridge, runId) {
+function groupWorkflow(tab, bridge, runId, options = {}) {
   let lastStatus = null;
+  let lastWindow = null;
   async function observe() {
     return tab.playwright.evaluate(() => {
       const list = document.querySelector('.messageMessageListlist');
@@ -45,13 +46,19 @@ function groupWorkflow(tab, bridge, runId) {
         const system = !!e.querySelector('.MessageItemGroupNoticeGroupNoticeBox') ||
           (!author && text.includes('加入了群聊'));
         const video = !!e.querySelector('.MessageItemShareAwemecontainer');
+        const card = e.querySelector('.MessageItemShareAwemecontainer');
+        const observedLink = card && Array.from(card.querySelectorAll('a[href]')).map(a=>a.href)
+          .find(u=>/^https:\/\/www\.douyin\.com\/video\/\d+(?:[?#]|$)/.test(u));
+        const shared = observedLink ? {url:observedLink.split(/[?#]/)[0],observed_url:observedLink,
+          title:card.innerText.trim(),author:card.querySelector('.MessageItemShareAwemeauthorName')?.innerText || '',
+          verification:'rendered_card_link'} : null;
         return {index:Number(e.closest('[data-index]').getAttribute('data-index')),
           text, author, role, time:e.querySelector('.MessageBoxTimetimeLayout')?.innerText || '',
           voice:e.querySelector('.MessageItemAudiovoiceText')?.innerText || '',
           duration:e.querySelector('.MessageItemAudioduration')?.innerText || '',
           images:Array.from(e.querySelectorAll('img')).map(i=>({url:i.getAttribute('src') || '',alt:i.getAttribute('alt')})),
           links:Array.from(e.querySelectorAll('a')).map(a=>({url:a.getAttribute('href'),text:a.innerText})),
-          message_kind:system?'system_notice':video?'video_share':''};
+          shared_video:shared, message_kind:system?'system_notice':video?'video_share':''};
       }).sort((a,b)=>a.index-b.index);
       const rect = list.getBoundingClientRect();
       return {group_name:groupName,captured_at:new Date().toISOString(),messages,
@@ -61,39 +68,75 @@ function groupWorkflow(tab, bridge, runId) {
   }
   async function save() {
     const window = await observe();
-    await bridge.playwright.getByLabel('群聊窗口 JSON',{exact:true}).fill(JSON.stringify({run_id:runId,window}));
-    await bridge.playwright.getByRole('button',{name:'保存窗口并检查进度',exact:true}).click();
+    const payload = JSON.stringify({run_id:runId,window});
+    if (options.transport === 'local-get') {
+      const url = new URL(options.bridgeUrl || 'http://127.0.0.1:8771/group-checkpoint');
+      if (url.hostname !== '127.0.0.1' || url.protocol !== 'http:' || url.pathname !== '/group-checkpoint') {
+        throw new Error('GET checkpoint transport requires the local loopback bridge');
+      }
+      url.searchParams.set('data', payload);
+      await bridge.goto(url.toString());
+    } else {
+      await bridge.playwright.getByLabel('群聊窗口 JSON',{exact:true}).fill(payload);
+      await bridge.playwright.getByRole('button',{name:'保存窗口并检查进度',exact:true}).click();
+    }
     // Read the response before any next action. A failed submission stops work.
     const result = await bridge.playwright.locator('#checkpoint-result').innerText({timeoutMs:10000});
     lastStatus = JSON.parse(result);
-    if (lastStatus.run_id !== runId) throw new Error('Checkpoint was not saved for this run');
+    if (lastStatus.run_id !== runId) throw new Error(lastStatus.error || 'Checkpoint was not saved for this run');
+    lastWindow = window;
     return lastStatus;
   }
   return {
     save,
     async older() {
       await save();
-      const window = await observe();
+      const window = lastWindow;
       await tab.scroll(window.scroll_target,'up',1);
       return {status:'scrolled_older',next:'Call save in the next CUA tool invocation after rendering'};
     },
     async latest() {
       await save();
-      const window = await observe();
-      await tab.scroll(window.scroll_target,'down',10);
+      const window = lastWindow;
+      await tab.scroll(window.scroll_target,'down',1);
       return {status:'scrolled_latest',next:'Call save in the next CUA tool invocation; repeat if not at latest'};
     },
     async transcribeVisible() {
       await save(); // ledger reuse ALWAYS precedes native transcription
-      const window = await observe();
+      // Pending indexes and rows must come from the SAME saved observation.
+      const window = lastWindow;
       const pending = new Set(lastStatus.pending_voice_indexes);
       const row = [...window.messages].reverse().find(m=>pending.has(m.index));
       if (!row) return {status:'no_visible_pending',...lastStatus};
-      await tab.playwright.locator('[data-index="'+row.index+'"] .MessageItemAudioaudioBox').click({button:'right'});
+      // Guard the live locator by the observed message text, not the index alone.
+      // A reused virtual-list node cannot silently target a different duration.
+      const escaped = row.text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const message = tab.playwright.locator('[data-index="'+row.index+'"] .messageMessageBoxmessageBox')
+        .filter({hasText:new RegExp('^'+escaped+'$')});
+      const fresh = await observe();
+      const context = messages => messages.filter(m=>Math.abs(m.index-row.index)<=2)
+        .map(m=>[m.index,m.text,m.author,m.duration]);
+      if (JSON.stringify(context(fresh.messages)) !== JSON.stringify(context(window.messages))) {
+        return {status:'window_changed',next:'Call save again to realign before transcription'};
+      }
+      if (row.voice) return save();
+      await message.locator('.MessageItemAudioaudioBox').click({button:'right'});
       const menu = tab.playwright.getByText('转文字',{exact:true});
-      if (!await menu.isVisible()) throw new Error('Native transcription action unavailable');
+      if (!await menu.isVisible()) {
+        await tab.pressKey('Escape');
+        return save(); // already-expanded text can be saved without another click
+      }
       await menu.click();
-      await tab.playwright.locator('[data-index="'+row.index+'"] .MessageItemAudiovoiceText').waitFor({state:'visible',timeoutMs:10000});
+      // The virtual list can rebase indexes during the menu operation. Never
+      // read from the old index until a fresh observation confirms its context.
+      const after = await observe();
+      const identity = m => [m.index,m.author,m.duration,m.time];
+      const neighbors = messages => messages.filter(m=>Math.abs(m.index-row.index)<=2).map(identity);
+      if (JSON.stringify(neighbors(after.messages)) !== JSON.stringify(neighbors(window.messages))) {
+        return {status:'window_changed',next:'Save and realign the current DOM before another voice action'};
+      }
+      // ASR can render asynchronously. The next invocation re-observes and saves
+      // it; no stale-index wait and no repeated menu click in this invocation.
       // Saving every segment makes CUA interruption resumable within this run.
       return save();
     }

@@ -86,6 +86,7 @@ def speech_source(metadata_path: Path, metadata: dict[str, Any], prepared_dir: P
     # a background music asset over the video's own narration.
     if media_root:
         candidates = list((media_root / aweme_id).rglob("*.mp4")) + list(media_root.rglob(f"{aweme_id}*.mp4"))
+        candidates.sort(key=lambda path: path.name != 'browser_playback.mp4')
         if candidates:
             video = candidates[0]
             destination = prepared_dir / f"{aweme_id}_speech_audio.m4a"
@@ -134,10 +135,12 @@ def main() -> None:
     requested_ids = set(args.ids or [])
     jobs: list[tuple[Path, dict[str, Any]]] = []
     metadata_paths = list(args.metadata_root.rglob("*_data.json")) + list(args.metadata_root.rglob("*.mp4.metadata.json"))
-    for metadata_path in sorted(set(metadata_paths)):
+    seen_ids = set()
+    for metadata_path in sorted(set(metadata_paths), key=lambda p: (not p.name.endswith('_data.json'), str(p))):
         metadata = load_metadata(metadata_path)
         aweme_id = str(metadata.get("aweme_id") or "")
-        if aweme_id and (not requested_ids or aweme_id in requested_ids):
+        if aweme_id and aweme_id not in seen_ids and (not requested_ids or aweme_id in requested_ids):
+            seen_ids.add(aweme_id)
             jobs.append((metadata_path, metadata))
 
     for index, (metadata_path, metadata) in enumerate(jobs, 1):
@@ -148,7 +151,9 @@ def main() -> None:
             continue
         try:
             source = speech_source(metadata_path, metadata, prepared_dir, args.media_root, args.stop_on_http_error)
-        except FileNotFoundError as exc:
+        except Exception as exc:
+            if args.stop_on_http_error:
+                raise
             # A missing playback track is an expected per-video condition
             # (e.g. older/private cards).  Leave it for the title-only
             # fallback in prepare_douyin_ingestion instead of aborting the
@@ -156,8 +161,12 @@ def main() -> None:
             print(f"[{index}/{len(jobs)}] skip {aweme_id}: {exc}", flush=True)
             continue
         print(f"[{index}/{len(jobs)}] transcribe {aweme_id}: {source.name}", flush=True)
-        result = transcribe(pcm_audio(source), path_or_hf_repo=MODEL, language="zh", verbose=False,
-            condition_on_previous_text=True, initial_prompt=INITIAL_PROMPT_TEMPLATE.format(author_name=args.author_name))
+        try:
+            result = transcribe(pcm_audio(source), path_or_hf_repo=MODEL, language="zh", verbose=False,
+                condition_on_previous_text=True, initial_prompt=INITIAL_PROMPT_TEMPLATE.format(author_name=args.author_name))
+        except Exception as exc:
+            print(f"[{index}/{len(jobs)}] ASR failed {aweme_id}: {type(exc).__name__}", flush=True)
+            continue
         result["speech_source"] = str(source.resolve())
         result["transcription_method"] = "mlx_whisper"
         output.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")

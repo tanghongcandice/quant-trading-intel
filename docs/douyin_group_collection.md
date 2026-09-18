@@ -1,4 +1,41 @@
-# v1.3.4 群聊断点流程（2026-09-15，优先于下文旧操作步骤）
+# v1.3.5 群聊缺口持久重试（2026-09-18）
+
+- 每轮读取最终库 group_retry_queue；待办即使不在本轮两小时窗口也不能丢弃。使用 evidence 中时间、作者、相邻语音时长定位旧消息；index 只是本轮提示，不能跨轮直接点击。
+- checkpoint 自动登记缺失语音和异常分享卡片；先处理可见待办，再向历史滚动定位剩余待办。每条每轮最多尝试两次，失败记录原因并继续其他消息，不删除待办、不宣称全量成功。
+- CUA 通道：异常卡片必须点击对应原卡片，读取实际播放页 URL 和可见标题/作者，再按现有快照协议保存 shared_video；不得猜链接或补造正文。语音继续使用原生“转文字”，每段保存并校验相邻消息防串位。
+- CUA 每次尝试后执行 .venv/bin/python scripts/group_retry_queue.py --run-id "$QUANT_RUN_ID" --attempt-key <快照返回的fingerprint>；失败追加 --error "<具体原因>"。独立脚本自动记录。
+- 可见内容补齐只标记 awaiting_import。prepare 将指纹附到 JSONL，最终库事务核实对应 message_parts 后才标记 resolved；重复记录也必须核实正文证据，不能仅凭 ID 销账。
+- 所有复核和入库完成后再次运行 .venv/bin/python scripts/group_retry_queue.py --run-id "$QUANT_RUN_ID"，检查 runs/<RUN_ID>/group_retry_report.json。报告新增、恢复、仍待处理数量及失败原因；队列未清空时继续冻结群聊完整游标，其他来源正常完成。
+- 专用 profile 未完成真实验证时不得创建启用标记；仍走现有 CUA 通道，不能把脚本已更新描述为现场补采已成功。
+
+# 独立群聊脚本（2026-09-18，用户授权的新通道）
+
+用户已授权将群聊浏览器操作迁移到独立持久化 Playwright profile。本节优先于下文仅使用日常 Chrome/CUA 的限制。不得复制日常 Chrome profile、读取或输出凭据；首次由用户登录 `data/browser_profiles/douyin_group`。
+
+- 首次登录：`.venv/bin/python scripts/douyin_group_collector.py login --wait-seconds 1800`，用户登录后打开「宇菠萝的认知圈1群」。脚本实际读到精确群名和消息列表才报告登录完成。
+- 真实验证：生成新 QUANT_RUN_ID，运行 `.venv/bin/python scripts/douyin_group_collector.py collect --run-id "$QUANT_RUN_ID" --headed --activate`。与每日采集共用锁，专用 profile 另有非阻塞锁。
+- 直接调用既有 checkpoint 函数逐窗口保存真实 DOM，保留同轮窗口哈希、最终库账本复用、两小时重叠、索引对齐、原生转写及部分入库。诊断阶段使用实际 begin/end。未解析的视频分享仍留置，不猜链接。
+- `--activate` 只在完整收据及诊断均通过时写入 `data/collection_state/douyin_group_script_enabled.json`。未通过前不得手填该文件，旧定时流程不切换。
+- 启用后每日 shell 在采集锁内自动调用独立脚本，无需先由 CUA 操作；已有同轮人工断点时避免重复运行。失败保留证据并继续其他来源；凭证和入库验证保持不变。
+- 本次实现仍待用户首次登录和真实完整覆盖验收。离线测试不能代替在线成功。若窗口变化无法安全对齐、原生转写两次无结果、滚动三次无进展或达到时间/步数界限，保留断点及失败原因。不会无限重试或推进不完整游标。
+
+# 群聊部分入库修正（2026-09-17，优先于下文整批 ready 要求）
+
+每轮结束即运行 `prepare_douyin_group_run.py`，即使 `group_checkpoint_status.json` 的 ready 为 false。程序仍逐窗口核验哈希、群名、作者、时间及原生转写来源；完整语音组和已解析消息可生成 `partial_ready` 收据，缺任何一段的语音组整体保留，未解析视频卡片单独保留。随后执行 `chrome_preflight_diagnostics.py validate`。不得把失败的 DOM 全覆盖阶段改写成成功；部分收据依据真实窗口验证导出子集。每日 shell 也会尝试这一导出步骤。
+
+部分条目的 `group_capture_progress.complete=false`，入库与调度两侧都禁止推进该来源游标。`group_pending.json` 保留缺口原因；下轮从冻结游标减两小时继续，已经入库的完整组通过最终数据库账本复用。未完成时仍报告 partial_failure，并同时报告成功入库数，不能为了消除警告标为全成功。全部覆盖完成后才恢复正常推进游标。保持现有任务时刻及其他来源不变。
+
+对旧检查点的恢复必须显式使用 `recover_verified_group_checkpoint.py --source-run <旧轮次> --after <已核对时间边界>`，原始 captured_at 保持不变，先备份、核验窗口来源并复核正文，再以历史恢复导入；不得当成本轮浏览器已刷新。
+
+# 群聊续采修正（2026-09-17，优先于下文移位即重开的步骤）
+
+读取最新版 `scripts/douyin_group_browser_workflow.js`。POST 被浏览器拦截时，可创建 `groupWorkflow(tab,bridge,runId,{transport:'local-get',bridgeUrl:'http://127.0.0.1:8771/group-checkpoint'})`，使用本机桥接通道；GET 会将窗口内容放进本机 URL，优先用默认 POST。不能用远程地址接收群聊数据。必须重新实读 DOM，禁止只改旧窗口的 captured_at。
+
+索引变化后保留同轮证据。服务器使用唯一的连续重叠（至少三条，且包含非语音文本锚点）验证整体偏移，并重排已存索引、保留已有转写。纯时长重复、歧义、内容变更和不重叠仍拒绝；返回可见文本/时间边界重新观察，不删除证据强行拼接。最新端新增消息仍须返回补齐，最新端最后两次观察锚点一致后才可完成。
+
+转写待办和消息取自同一个已保存窗口；点击前复读目标及相邻消息，并用目标原文约束实时控件。`window_changed` 表示重新调用 save 对齐后再选目标。每次滚动仅一页，下一次工具调用读取并保存；不可在同一次滚动调用中立即循环读取旧渲染结果。无法确定目标时不得继续沿用旧索引。每段原生文字出现后立即保存。
+
+# v1.3.4 群聊断点流程（2026-09-15，受上述续采修正补充）
 
 本节替代下文手写 `collection_evidence`、共享快照封装和仅凭 item 主键复用的旧步骤。只采已核实群主/管理员、原生转写和最终数据库权威规则不变。不是新增定时器；现有自动化每轮读取本文。
 

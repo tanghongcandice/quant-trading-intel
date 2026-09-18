@@ -19,19 +19,40 @@ def prepare(root, run_id):
     source = folder / 'group_checkpoint.json'
     payload = json.loads(source.read_text())
     from group_capture_checkpoint import validate_capture
-    validate_capture(payload, root, run_id)
+    result = validate_capture(payload, root, run_id, allow_partial=True)
+    partial = bool(result['errors'])
     evidence = payload.get('collection_evidence') or {}
+    if evidence.get('pending_voice_count') != result['pending_voice_count']:
+        raise ValueError('Declared pending count differs from observed windows')
     if evidence.get('run_id') != run_id:
         raise ValueError('Group was not refreshed for this run; old snapshots are forbidden')
-    if evidence.get('latest_checked') is not True or evidence.get('overlap_covered') is not True:
-        raise ValueError('Latest messages and two-hour overlap have not been checked')
-    if evidence.get('pending_voice_count') != 0:
-        raise ValueError('Group has untranscribed voice messages')
     captured = datetime.fromisoformat(payload['captured_at'].replace('Z', '+00:00'))
     age = (datetime.now(timezone.utc) - captured).total_seconds()
     if not 0 <= age <= 7200:
         raise ValueError('Group capture is stale or future-dated')
-    items = build(payload)
+    items = build(payload, allow_partial=True)
+    from group_retry_queue import sync
+    retry = sync(root, payload, run_id, items)
+    _write_atomic(folder/'group_retry_plan.json',retry)
+    if retry['pending_count'] and not partial:
+        partial = True
+        result['errors'].append('Persistent group retry queue awaits final-store confirmation')
+    if partial and not items:
+        raise ValueError('No verified complete messages available; retain checkpoint')
+    for item in items:
+        item.setdefault('raw_payload', {})['group_capture_progress'] = {
+            'complete': not partial, 'run_id': run_id, 'errors': result['errors'],
+            'baseline': evidence.get('final_db_cursor')}
+    from douyin_group_processing_ledger import voice_batches
+    from group_capture_checkpoint import signature, digest
+    pending = dict(result)
+    pending['voice_batches'] = [batch for batch in voice_batches(payload) if not all(batch['voices'])]
+    pending['unresolved_cards'] = [
+        {'index_hint':row['index'], 'signature':signature(row),
+         'fingerprint':digest(signature(row)), 'resolved_time':row.get('resolved_time')}
+        for row in payload['messages']
+        if row.get('message_kind') == 'video_share' and not row.get('shared_video')]
+    _write_atomic(folder/'group_pending.json', pending)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/api'))
     from app.services.group_reconciliation import preserve_identity
     db = root / 'data/quant_intel.sqlite'
@@ -61,7 +82,9 @@ def prepare(root, run_id):
     receipt = {'run_id':run_id, 'captured_at':payload['captured_at'],
         'version':2, 'capture_sha256':hashlib.sha256((folder/'group_capture.json').read_bytes()).hexdigest(),
         'sha256':hashlib.sha256(data).hexdigest(), 'raw_messages':len(payload['messages']),
-        'built_items':len(items), 'pending_voice_count':0, 'status':'ready',
+        'built_items':len(items), 'pending_voice_count':result['pending_voice_count'],
+        'status':'partial_ready' if partial else 'ready', 'coverage_complete':not partial,
+        'pending_errors':result['errors'],
         'processing_ledger':ledger_stats}
     _write_atomic(folder/'group_receipt.json', receipt)
     return receipt

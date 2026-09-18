@@ -12,6 +12,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from douyin_retry import retry_works, record_attempt
 
 
 PROFILES = {
@@ -156,7 +157,7 @@ def _candidate_works(source_id: str, cfg: dict, payload: dict, cutoff: datetime 
     return works
 
 
-def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
+def prepare(root: Path, source_id: str, *, allow_missing: bool = False, retry_limit: int = 3, retry_only: bool = False, force_retry: bool = False) -> dict:
     cfg = PROFILES[source_id]
     snapshot_path = root / cfg["snapshot"]
     output_path = root / cfg["output"]
@@ -171,19 +172,22 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
     # cards title-only while preserving the normal information_item schema.
     snapshot_count = len(payload["works"])
     cutoff = _cursor_cutoff(root, source_id)
-    works = _candidate_works(source_id, cfg, payload, cutoff)
+    works = [] if retry_only else _candidate_works(source_id, cfg, payload, cutoff)
+    retries = retry_works(root, source_id, cfg, retry_limit, force_retry) if retry_limit else []
+    retry_ids = {w['aweme_id'] for w in retries}
+    works = [w for w in works if str(w.get('aweme_id')) not in retry_ids] + retries
     # A rendered badge is the first guard. Existing public detail metadata is
     # the second guard and wins over a false-negative browser snapshot.
     _apply_metadata_access_guard(root, works)
     known_ids = _known_external_ids(root, source_id)
     # Discovery keeps the full two-hour overlap for cursor/dedupe auditing, but
-    # expensive downloader/Whisper work is only allowed for IDs absent from the
-    # final store. Existing records remain in ``works`` so the scheduler can
+    # expensive downloader/Whisper work is allowed for new IDs and bounded
+    # incomplete-transcript retries. Existing records remain so the scheduler can
     # still verify them as duplicates and detect metadata/access changes.
     enrichment_ids = sorted(
         str(work.get("aweme_id"))
         for work in works
-        if work.get("aweme_id") and str(work.get("aweme_id")) not in known_ids and not work.get("review_only")
+        if work.get("aweme_id") and (str(work.get("aweme_id")) not in known_ids or str(work.get("aweme_id")) in retry_ids) and not work.get("review_only")
     )
     normalized = {"author": payload.get("author") or cfg["author_name"], "works": works}
     temp = root / "runs" / f".{source_id}.normalized.json"
@@ -199,20 +203,41 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
         sys.executable = str(project_python)
     enrich = root / "scripts" / "enrich_douyin_audio.py"
     if enrich.exists() and enrichment_ids:
-        subprocess.run([sys.executable, str(enrich), "--snapshot", str(temp),
+        log_dir = root / 'runs' / os.environ.get('QUANT_RUN_ID', 'douyin_prepare_latest')
+        log_dir.mkdir(parents=True, exist_ok=True)
+        retry_audio_dir = log_dir / 'retry_audio' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+        enrichment_result = subprocess.run([sys.executable, str(enrich), "--snapshot", str(temp),
                         "--metadata-root", str(root / "data" / "douyin_metadata"),
                         "--whisper-dir", str(root / "data" / "whisper"),
                         "--media-dir", str(root / "data" / "douyin_media"),
                         "--author-name", cfg["author_name"], "--ids", *enrichment_ids], cwd=str(root),
                        env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        works = json.loads(temp.read_text())['works']
+        _apply_metadata_access_guard(root, works)
+        allowed_ids = {str(w.get('aweme_id')) for w in works if not w.get('review_only')}
+        transcription_ids = [aid for aid in enrichment_ids if aid in allowed_ids]
+        # Never let a known failed/truncated ASR file suppress another attempt.
+        # Preserve it for audit, then require a fresh result for retry IDs.
+        import shutil
+        for aid in retry_ids & set(transcription_ids):
+            prior_asr = root / 'data' / 'whisper' / f'{aid}.json'
+            if prior_asr.exists():
+                backup = log_dir / 'asr_before' / f'{aid}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")}.json'
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(prior_asr), str(backup))
         transcribe = root / "scripts" / "transcribe_douyin_batch.py"
-        subprocess.run([sys.executable, str(transcribe), "--metadata-root",
+        transcription_result = subprocess.run([sys.executable, str(transcribe), "--metadata-root",
                         str(root / "data" / "douyin_metadata"), "--output-dir",
                         str(root / "data" / "whisper"), "--prepared-dir",
-                        str(root / "data" / "whisper" / "prepared_audio"),
+                        str(retry_audio_dir if retry_ids else root / "data" / "whisper" / "prepared_audio"),
                         "--media-root", str(root / "data" / "douyin_media"),
-                        "--author-name", cfg["author_name"], "--ids", *enrichment_ids], cwd=str(root),
-                       env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                        "--author-name", cfg["author_name"], "--ids", *transcription_ids], cwd=str(root),
+                       env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) if transcription_ids else None
+        (log_dir / f'{source_id}_enrichment.log').write_text(enrichment_result.stdout, encoding='utf-8')
+        (log_dir / f'{source_id}_transcription.log').write_text(transcription_result.stdout if transcription_result else 'No authorized public jobs', encoding='utf-8')
+        # Detail metadata can reveal membership after discovery.
+        works = json.loads(temp.read_text())['works']
+        _apply_metadata_access_guard(root, works)
     # Keep the standard builder total: an individual failed download is
     # represented as title-only, while successful video/audio jobs use ASR.
     metadata_ids = {p.stem.replace('_data','') for p in (root / 'data' / 'douyin_metadata').rglob('*_data.json')}
@@ -223,11 +248,22 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
         aid = str(row.get('aweme_id'))
         if aid not in metadata_ids or aid not in whisper_ids:
             row['no_audio'] = True
+            row.setdefault('transcription_error', 'metadata_missing' if aid not in metadata_ids else 'asr_missing')
     # Pass the recomputed per-card fallback markers to the builder.  The
     # builder consumes the normalized snapshot file, not the local `works`
     # list, so mutating only the list previously caused false hard failures
     # for cards without Whisper output.
-    normalized["works"] = works
+    # Reuse the committed reviewed content itself, not stale ASR files.
+    reused_docs = []
+    with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
+        for work in works:
+            aid = str(work.get('aweme_id'))
+            if aid in known_ids and aid not in retry_ids:
+                row = db.execute('SELECT raw_json FROM information_items WHERE source_id=? AND external_id=?',(source_id,aid)).fetchone()
+                if row:
+                    reused_docs.append(json.loads(row[0]))
+    reused_ids = {d['external']['id'] for d in reused_docs}
+    normalized["works"] = [w for w in works if str(w.get('aweme_id')) not in reused_ids]
     temp.write_text(json.dumps(normalized, ensure_ascii=False), encoding="utf-8")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     api = root / "apps" / "api"
@@ -240,6 +276,16 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
                             capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    built = [json.loads(line) for line in output_path.read_text().splitlines() if line.strip()]
+    built += reused_docs
+    for doc in built:
+        aid = doc['external']['id']
+        if aid in retry_ids:
+            trans = doc['raw_payload']['transcription']
+            record_attempt(root, source_id, aid, 'awaiting_review' if trans['status']=='complete' else trans['status'], trans.get('error'))
+    output_path.write_text(''.join(json.dumps(d,ensure_ascii=False)+'\n' for d in built),encoding='utf-8')
+    incomplete = [{'id':d['external']['id'], 'error':d['raw_payload']['transcription'].get('error')}
+                  for d in built if d['raw_payload']['transcription']['status'] in {'pending_retry','no_audio_title_only','no_speech_title_only'}]
     def _work_time(w: dict) -> str:
         raw = w.get('created_at') or w.get('create_time') or w.get('publish_time')
         if raw:
@@ -260,15 +306,29 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False) -> dict:
             "candidate_items": len(works), "cursor_cutoff": cutoff.isoformat() if cutoff else None,
             "enrichment_items": len(enrichment_ids), "reused_processed_items": len(works) - len(enrichment_ids),
             "snapshot_latest": snapshot_latest,
+            "pending_transcription": incomplete,
+            "retry_candidates": len(retries),
             "output": str(output_path)}
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--retry-limit', type=int, default=3)
+    parser.add_argument('--retry-only', action='store_true')
+    parser.add_argument('--force-retry', action='store_true')
     args = parser.parse_args()
-    results = [prepare(args.root.resolve(), source_id, allow_missing=True) for source_id in PROFILES]
-    print(json.dumps({"status": "success", "profiles": results}, ensure_ascii=False))
+    results = []
+    for source_id in PROFILES:
+        try:
+            results.append(prepare(args.root.resolve(), source_id, allow_missing=True, retry_limit=args.retry_limit, retry_only=args.retry_only, force_retry=args.force_retry))
+        except Exception as exc:
+            results.append({'source_id':source_id,'status':'failed','error':str(exc)})
+    failed = any(r['status']=='failed' for r in results)
+    pending = any(r.get('pending_transcription') for r in results)
+    print(json.dumps({"status": "partial_failure" if failed else ('pending_transcription' if pending else 'success'), "profiles": results}, ensure_ascii=False))
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

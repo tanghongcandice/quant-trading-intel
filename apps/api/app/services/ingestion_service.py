@@ -11,6 +11,9 @@ from app.services.link_policy import suppress_link_translation
 from app.services.subscription_policy import enforce_subscription_policy
 from app.services.discord_guard import enforce, target, sid as discord_source_id, SOURCES
 from app.services.group_reconciliation import update_existing
+from app.services.x_revision import update_x_preview
+from app.services.douyin_revision import update_profile_transcript
+from app.services.media_revision import update_static_media
 
 
 def utc_now_iso() -> str:
@@ -127,6 +130,15 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             ),
         )
         for item in items:
+            if update_static_media(conn, item, actual_run_id):
+                updated += 1
+                continue
+            if update_profile_transcript(conn, item, actual_run_id):
+                updated += 1
+                continue
+            if update_x_preview(conn, item, actual_run_id):
+                updated += 1
+                continue
             if update_existing(conn, item, actual_run_id):
                 updated += 1
                 continue
@@ -225,6 +237,8 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
         by_source: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             sid = (item.get("source") or {}).get("id")
+            if ((item.get('raw_payload') or {}).get('group_capture_progress') or {}).get('complete') is False:
+                continue
             if sid in SOURCES and not target(item):
                 continue
             if sid:
@@ -248,6 +262,9 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             )
 
         guard_stats = enforce(conn, actual_run_id)
+        from app.services.group_retry_queue import close_committed
+        for item in items:
+            close_committed(conn, item)
         retained = conn.execute('SELECT count(*) FROM information_items WHERE run_id=?',(actual_run_id,)).fetchone()[0]
         summary = {
             "jsonl_path": str(jsonl_path),

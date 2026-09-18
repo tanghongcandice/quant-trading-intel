@@ -46,8 +46,8 @@ class DouyinAdapter(SourceAdapter):
                 captured = datetime.fromisoformat(receipt['captured_at'].replace('Z', '+00:00'))
                 if not 0 <= (datetime.now(timezone.utc)-captured).total_seconds() <= 7200:
                     raise RuntimeError('Group capture receipt expired')
-                if (receipt.get('run_id') != context.run_id or receipt.get('status') != 'ready'
-                        or receipt.get('pending_voice_count') != 0
+                if (receipt.get('run_id') != context.run_id or receipt.get('status') not in {'ready','partial_ready'}
+                        or (receipt.get('status') == 'ready' and receipt.get('pending_voice_count') != 0)
                         or receipt.get('sha256') != hashlib.sha256(path.read_bytes()).hexdigest()):
                     raise RuntimeError('Group capture receipt mismatches this run or contains pending voices')
             # Browser bridge writes a single {author, works:[...]} snapshot;
@@ -67,7 +67,11 @@ class DouyinAdapter(SourceAdapter):
                 age = (datetime.now(timezone.utc) - newest).total_seconds() / 3600
                 if age > float(source["max_snapshot_age_hours"]):
                     raise RuntimeError("Group snapshot is stale; refresh the authorized group in the signed-in browser")
-            return AdapterResult(source["id"], self.source_type, docs, [str(path)], {"mode": "browser_session"})
+            stats = {"mode": "browser_session"}
+            if source.get('require_run_capture') and not context.dry_run:
+                stats.update(coverage_complete=receipt.get('status') == 'ready',
+                             pending_errors=receipt.get('pending_errors', []))
+            return AdapterResult(source["id"], self.source_type, docs, [str(path)], stats)
         if context.dry_run:
             return AdapterResult(source["id"], self.source_type, stats={"mode": "browser_session", "dry_run": True})
         return AdapterResult(

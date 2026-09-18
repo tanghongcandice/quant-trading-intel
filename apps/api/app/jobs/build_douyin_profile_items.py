@@ -20,7 +20,7 @@ DEFAULT_SOURCE_ID = "douyin_jiujiujiucai"
 DEFAULT_AUTHOR_NAME = "久韭究财"
 DEFAULT_AUTHOR_EXTERNAL_ID = "MS4wLjABAAAAfZSJLO6q-2SWxDS2tp2oor3lawUH4JB2TPKWOGoykXU"
 MEMBER_NOTICE = "【会员专属作品｜当前仅保存标题，不下载未获授权的完整内容】"
-NO_AUDIO_NOTICE = "【视频无可转录音轨｜当前仅保存标题】"
+NO_AUDIO_NOTICE = "【转录待补全｜媒体获取或转写尚未成功，当前仅保存标题】"
 NO_SPEECH_NOTICE = "【视频未检测到可靠财经口播｜当前仅保存标题】"
 
 
@@ -84,10 +84,11 @@ def build_item(
         text = MEMBER_NOTICE if review_only else (NO_AUDIO_NOTICE if no_audio else NO_SPEECH_NOTICE)
         transcription = {
             "status": (
-                "member_title_only" if review_only else ("no_audio_title_only" if no_audio else "no_speech_title_only")
+                "member_title_only" if review_only else ("pending_retry" if no_audio else "no_speech_title_only")
             ),
             "model": None,
             "text_refinement": None,
+            "error": work.get('transcription_error'),
         }
     else:
         if aweme_id not in metadata:
@@ -129,8 +130,8 @@ def build_item(
             "removed_repetitions": removed,
             "contextual_corrections": list(corrections),
             "text_refinement": {
-                "method": "codex_title_and_finance_context_review",
-                "reviewer": "codex",
+                "method": "automatic_title_and_finance_term_check",
+                "status": "pending_codex_review",
                 "preserve_numbers": True,
                 "preserve_claims": True,
             },
@@ -169,6 +170,7 @@ def build_item(
         "analysis": None,
         "raw_payload": {
             "market": "cn",
+            "retry_transcription": bool(work.get('retry_transcription')),
             "comments_collected": False,
             "profile_snapshot": True,
             "ownership": {"verified": bool(work.get('ownership_verified')), "profile_url": work.get('profile_url'), "method": "rendered_user_post_list"},
@@ -179,7 +181,7 @@ def build_item(
             "a_share_term_review": term_review,
             "analysis_policy": {
                 "include": not (review_only or no_audio or no_speech),
-                "mode": "review_only" if (review_only or no_audio or no_speech) else "analysis",
+                "mode": "review_only" if review_only else ("pending_transcription" if (no_audio or no_speech) else "analysis"),
                 "reason": (
                     "subscription_preview"
                     if review_only
@@ -205,20 +207,29 @@ def main() -> None:
     snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
     metadata = load_metadata(args.metadata_root)
     collected_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    items = [
-        build_item(
-            work,
-            metadata,
-            args.whisper_dir,
-            collected_at,
-            source_id=args.source_id,
-            author_name=args.author_name,
-            author_external_id=args.author_external_id,
-            profile_url=args.profile_url,
-        )
-        for work in snapshot.get("works") or []
-        if not work.get("pinned")
-    ]
+    items = []
+    for work in snapshot.get('works') or []:
+        if work.get('pinned'):
+            continue
+        try:
+            item = build_item(
+                work,
+                metadata,
+                args.whisper_dir,
+                collected_at,
+                source_id=args.source_id,
+                author_name=args.author_name,
+                author_external_id=args.author_external_id,
+                profile_url=args.profile_url,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            # A single incomplete/failed ASR must not abort the other profile
+            # works. Keep the actual cause, never claim that audio is absent.
+            failed_work = dict(work, no_audio=True, transcription_error=str(exc))
+            item = build_item(failed_work, metadata, args.whisper_dir, collected_at,
+                              source_id=args.source_id, author_name=args.author_name,
+                              author_external_id=args.author_external_id, profile_url=args.profile_url)
+        items.append(item)
     items.sort(key=lambda item: item["timestamps"]["created_at"])
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in items), encoding="utf-8")

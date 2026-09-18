@@ -85,7 +85,9 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length).decode("utf-8")
             if self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
-                raw = parse_qs(raw)["payload"][0]
+                raw = parse_qs(raw, keep_blank_values=True).get("payload", [""])[0]
+                if not raw.strip():
+                    raise ValueError("群聊窗口 JSON 不能为空")
             if urlparse(self.path).path == '/group-checkpoint':
                 from group_capture_checkpoint import checkpoint
                 envelope = json.loads(raw)
@@ -123,6 +125,16 @@ class Handler(BaseHTTPRequestHandler):
         """Small GET fallback for browser sandboxes that disallow fetch/POST."""
         parsed = urlparse(self.path)
         if parsed.path == '/group-checkpoint':
+            raw = parse_qs(parsed.query).get('data', [None])[0]
+            if raw is not None:
+                try:
+                    from group_capture_checkpoint import checkpoint
+                    envelope = json.loads(raw)
+                    result = checkpoint(self.root, envelope['run_id'], envelope['window'])
+                    self._checkpoint_response(result)
+                except Exception as exc:  # noqa: BLE001
+                    self._checkpoint_response({'ok': False, 'error': str(exc)})
+                return
             self._checkpoint_response({'ready':False, 'message':'Waiting for a rendered DOM window'})
             return
         if parsed.path == "/group-import":

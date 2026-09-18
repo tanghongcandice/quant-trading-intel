@@ -7,6 +7,7 @@ DB_PATH="$ROOT/data/quant_intel.sqlite"
 PYTHON_BIN="${PYTHON_BIN:-$ROOT/.venv/bin/python}"
 RUN_ID="${QUANT_RUN_ID:-premarket_$(date -u '+%Y%m%dT%H%M%SZ')}"
 [[ "$RUN_ID" =~ ^[A-Za-z0-9_-]+$ ]] || exit 2
+export QUANT_RUN_ID="$RUN_ID"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
@@ -28,6 +29,18 @@ log "Starting daily premarket collection: $RUN_ID"
 cd "$API_DIR"
 collection_json="/tmp/quant_intel_daily_collection_${RUN_ID}.json"
 collection_failed=0
+collection_held=0
+
+# Activate only after the dedicated profile completes live coverage validation.
+# Preserve any same-run manual checkpoint instead of running two collectors.
+if [[ -f "$ROOT/data/collection_state/douyin_group_script_enabled.json" && ! -f "$ROOT/runs/$RUN_ID/group_checkpoint.json" ]]; then
+  log "Collecting group through dedicated Playwright profile"
+  mkdir -p "$ROOT/runs/$RUN_ID"
+  if ! "$PYTHON_BIN" "$ROOT/scripts/douyin_group_collector.py" collect --run-id "$RUN_ID" >"$ROOT/runs/$RUN_ID/group_collector.log" 2>&1; then
+    collection_failed=1
+    log "Group incomplete; retaining checkpoint and continuing other sources"
+  fi
+fi
 
 # X, Discord, and Substack now run through their command-line collectors in
 # the scheduler. Only Douyin still has a separate browser-refresh/build step.
@@ -71,6 +84,10 @@ fi
 
 # A group receipt is mandatory in its adapter. Missing capture fails only that
 # source; never stop X/Discord/Substack just because browser access failed.
+if [[ -f "$ROOT/runs/$RUN_ID/group_checkpoint.json" ]]; then
+  "$PYTHON_BIN" "$ROOT/scripts/prepare_douyin_group_run.py" --root "$ROOT" --run-id "$RUN_ID" || true
+  "$PYTHON_BIN" "$ROOT/scripts/chrome_preflight_diagnostics.py" validate --root "$ROOT" --run-id "$RUN_ID" || true
+fi
 
 cd "$API_DIR"
 set +e
@@ -79,7 +96,7 @@ collection_rc=$?
 set -e
 cat "$collection_json"
 
-if [[ "$collection_rc" -ne 0 ]]; then
+if [[ "$collection_rc" -gt 1 ]]; then
   collection_failed=1
 fi
 
@@ -99,7 +116,7 @@ failed_sources = totals.get("failed_sources", 0)
 status = data.get("status")
 scheduler_status = summary.get("status")
 
-if status != "success" or scheduler_status != "success" or failed_sources:
+if status not in {"success", "awaiting_codex_review", "success_with_held_items"} or scheduler_status != "success" or failed_sources:
     print(f"collection_status={status} scheduler_status={scheduler_status} failed_sources={failed_sources}", file=sys.stderr)
     for source in summary.get("sources") or []:
         if source.get("status") != "success":
@@ -107,10 +124,38 @@ if status != "success" or scheduler_status != "success" or failed_sources:
             print(f"failed_source={source.get('id')} type={source.get('type')} error={error[:400]}", file=sys.stderr)
     raise SystemExit(1)
 
-print(f"collection_status=ok run_id={summary.get('run_id')} new={totals.get('new', 0)} items={totals.get('items', 0)}")
+print(f"collection_status={status} run_id={summary.get('run_id')} new={totals.get('new', 0)} items={totals.get('items', 0)} pending_review={data.get('pending_review_count', 0)}")
 PY
 
+if "$PYTHON_BIN" -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("pending_review_count",0) else 1)' "$collection_json"; then
+  collection_held=1
+fi
+
+# Include old, cooldown, exhausted and uncommitted review candidates. An empty
+# scheduler batch alone cannot prove that the transcript backlog is cleared.
+set +e
+"$PYTHON_BIN" "$ROOT/scripts/check_douyin_completion.py" --db "$DB_PATH" \
+  --collection-json "$collection_json" --output "$ROOT/runs/$RUN_ID/douyin_completion.json"
+completion_rc=$?
+set -e
+if [[ "$completion_rc" -eq 2 ]]; then
+  collection_held=1
+elif [[ "$completion_rc" -ne 0 ]]; then
+  collection_failed=1
+fi
+
 log "Checking SQLite integrity"
+"$PYTHON_BIN" "$ROOT/scripts/group_retry_queue.py" --run-id "$RUN_ID"
+if ! "$PYTHON_BIN" - "$ROOT/runs/$RUN_ID/group_retry_report.json" <<'PY'
+import json,sys
+report=json.load(open(sys.argv[1]))
+if report['pending_count']:
+    print('Group retry backlog:',report['pending_count'],'see group_retry_report.json')
+    raise SystemExit(1)
+PY
+then
+  collection_held=1
+fi
 integrity="$(sqlite3 "$DB_PATH" 'PRAGMA integrity_check;')"
 [[ "$integrity" == "ok" ]] || fail "SQLite integrity_check returned: $integrity"
 
@@ -151,4 +196,8 @@ if [[ "$collection_failed" -ne 0 ]]; then
   fail "Daily collection did not complete successfully; see $collection_json"
 fi
 
-log "Daily premarket collection completed successfully: $RUN_ID"
+if [[ "$collection_held" -eq 1 ]]; then
+  log "Daily collection success_with_held_items: $RUN_ID; review pending_codex_review.jsonl and runs/$RUN_ID/douyin_completion.json before declaring completion"
+else
+  log "Daily premarket collection completed successfully: $RUN_ID"
+fi

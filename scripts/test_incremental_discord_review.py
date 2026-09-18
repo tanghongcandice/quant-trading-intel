@@ -67,6 +67,23 @@ class IncrementalDiscordReviewTests(unittest.TestCase):
     def test_new_english_item_enters_review(self):
         self.assertTrue(_requires_codex_review(discord_item(is_new=True)))
 
+    def test_x_and_substack_missing_translation_are_held(self):
+        for platform in ('x', 'substack'):
+            item = discord_item(text='Blackrock to build customizable 401k funds for firms - WSJ')
+            item['source']['type'] = platform
+            self.assertTrue(_requires_codex_review(item))
+            item['ingestion']['is_new'] = False
+            self.assertTrue(_requires_codex_review(item))  # Includes expanded X originals.
+            item['raw_payload']['translation'] = '   '
+            self.assertTrue(_requires_codex_review(item))
+            item['raw_payload']['translation'] = {'text': '贝莱德将为企业打造可定制基金。'}
+            self.assertFalse(_requires_codex_review(item))
+
+    def test_x_link_only_is_exempt(self):
+        item = discord_item(text='https://example.com')
+        item['source']['type'] = 'x'
+        self.assertFalse(_requires_codex_review(item))
+
     def test_link_only_and_translated_items_skip_review(self):
         self.assertFalse(_requires_codex_review(discord_item(text="https://example.com")))
         item = discord_item()

@@ -23,3 +23,9 @@ with sync_playwright() as p:
     assert not empty['items'] and empty['stop_reason'] != 'cutoff_reached'
     browser.close()
 print('PASS: reply avatar excluded, multiline preserved, cutoff and empty capture distinguished')
+
+search_extractor = (root / 'scripts/discord_search_extract.js').read_text()
+assert "replyAttributeValues" in search_extractor
+assert "candidate !== messageId" in search_extractor
+assert "data-list-item-id" in search_extractor
+print('PASS: search reply fallback inspects visible attributes and excludes current message ID')

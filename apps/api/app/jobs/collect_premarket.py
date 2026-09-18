@@ -38,23 +38,28 @@ def _extract_summary(stdout: str) -> dict[str, Any]:
 
 
 def _requires_codex_review(doc: dict[str, Any]) -> bool:
-    """Return true only for a newly collected Discord item needing translation."""
+    """Gate untranslated English sources and unreviewed profile transcripts."""
     source = doc.get("source") or {}
-    if source.get("type") != "discord":
+    if source.get('id') in {'douyin_jiujiujiucai', 'douyin_panyiyoudianshen'}:
+        transcript = (doc.get('raw_payload') or {}).get('transcription') or {}
+        review = transcript.get('text_refinement') or {}
+        return transcript.get('status') == 'complete' and (review.get('status') != 'reviewed' or review.get('reviewer') != 'codex')
+    if source.get("type") not in {"discord", "x", "substack"}:
         return False
     # Old scheduler-state records may be emitted only in explicit duplicate
     # modes. They are never new work for the translation queue.
-    if (doc.get("ingestion") or {}).get("is_new") is False:
+    if source.get("type") == "discord" and (doc.get("ingestion") or {}).get("is_new") is False:
         return False
     if is_link_only(doc):
         return False
     text = (doc.get("content") or {}).get("text") or ""
     translation = (doc.get("raw_payload") or {}).get("translation") or {}
     translated_text = translation.get("text") if isinstance(translation, dict) else translation
+    language = str((doc.get("content") or {}).get("language") or "").lower()
     return (
         len(re.findall("[A-Za-z]", text)) >= 4
-        and not re.search("[\u4e00-\u9fff]", text)
-        and not translated_text
+        and (language.startswith("en") or not re.search("[\u4e00-\u9fff]", text))
+        and not str(translated_text or "").strip()
     )
 
 
@@ -125,7 +130,7 @@ def run_collection(
 
     scheduler_status = summary.get("status") or "unknown"
     result_status = "success" if scheduler_status == "success" else scheduler_status
-    if pending_review:
+    if pending_review and scheduler_status == 'success':
         result_status = 'awaiting_codex_review'
     if import_stats is not None and result_status != 'success':
         with sqlite3.connect(settings.db_path) as db:

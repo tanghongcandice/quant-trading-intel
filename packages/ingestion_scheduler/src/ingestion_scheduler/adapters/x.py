@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,41 @@ class XAdapter(SourceAdapter):
 
         resolved_output = self._output_from_stdout(result.stdout) or output_path
         docs = read_jsonl(resolved_output)
+        # Retry final-store previews even after their publication cursor passed.
+        db = context.base_dir / 'data' / 'quant_intel.sqlite'
+        if db.exists():
+            with sqlite3.connect(db) as conn:
+                rows = conn.execute('SELECT external_id,raw_json FROM information_items WHERE source_id=? ORDER BY created_at', (source_id,)).fetchall()
+            pending = []
+            for external_id, raw in rows:
+                payload = json.loads(raw).get('raw_payload') or {}
+                tweet = payload.get('tweet') or {}
+                if (payload.get('source_truncated') or tweet.get('source_truncated')) and not (payload.get('subscription_preview') or tweet.get('subscription_preview')):
+                    pending.append(external_id)
+            queue = context.base_dir / 'data' / f'{safe_slug(source_id)}-retry-offset.json'
+            offset = json.loads(queue.read_text()).get('offset', 0) if queue.exists() else 0
+            for index in range(min(3, len(pending))):
+                tweet_id = pending[(offset + index) % len(pending)]
+                retry_source = dict(source, mode='tweet', tweet_id=tweet_id)
+                retry_dir = ensure_dir(raw_dir / f'retry-{tweet_id}')
+                retry_cmd, retry_output = self._build_command(retry_source, context.base_dir, retry_dir)
+                try:
+                    retry = run_subprocess(retry_cmd, timeout_seconds=context.timeout_seconds)
+                    write_text(retry_dir / 'stderr.log', retry.stderr)
+                    if retry.returncode != 0:
+                        if re.search(r'login|session unavailable|captcha|challenge', retry.stderr, re.I):
+                            break
+                        continue
+                    recovered = [d for d in read_jsonl(retry_output) if str(d.get('id')) == tweet_id]
+                    for doc in recovered:
+                        doc['retry_truncated'] = True
+                        existing = next((d for d in docs if str(d.get('id')) == tweet_id), None)
+                        if existing is None or len(doc.get('rawContent') or '') >= len(existing.get('rawContent') or ''):
+                            docs = [d for d in docs if str(d.get('id')) != tweet_id] + [doc]
+                except Exception as exc:
+                    write_text(retry_dir / 'stderr.log', f'{type(exc).__name__}: {exc}')
+            if pending:
+                write_text(queue, json.dumps({'offset':(offset + min(3,len(pending))) % len(pending)}))
         return self._result_from_docs(
             source,
             context,

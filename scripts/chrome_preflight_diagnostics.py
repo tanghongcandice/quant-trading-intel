@@ -172,13 +172,19 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
     try:
         from group_capture_checkpoint import validate_capture
         capture = json.loads((folder / 'group_capture.json').read_text())
-        validate_capture(capture, args.root, args.run_id)
+        coverage = validate_capture(capture, args.root, args.run_id, allow_partial=True)
         receipt = json.loads((folder / 'group_receipt.json').read_text())
         built = (folder / 'group_items.jsonl').read_bytes()
         if receipt.get('run_id') != args.run_id or receipt.get('sha256') != hashlib.sha256(built).hexdigest():
             raise ValueError('Receipt content hash/run mismatch')
         if receipt.get('capture_sha256') != hashlib.sha256((folder / 'group_capture.json').read_bytes()).hexdigest():
             raise ValueError('Capture content hash mismatch')
+        if receipt.get('status') == 'partial_ready':
+            # Hash-verified DOM windows prove the exported subset. Do not rewrite
+            # failed full-coverage diagnostics as success to import that subset.
+            missing = [stage for stage in missing if stage not in {'group_dom_read','processing_ledger_reuse','group_receipt'}]
+        elif coverage['errors']:
+            raise ValueError('Incomplete coverage cannot have a complete receipt')
     except (ValueError, OSError, KeyError, TypeError) as exc:
         errors.append(str(exc))
     result = {"run_id": args.run_id, "ready": not missing and not errors,
