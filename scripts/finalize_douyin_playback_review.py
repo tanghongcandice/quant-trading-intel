@@ -25,13 +25,18 @@ def finalize(folder):
         trans = item['raw_payload']['transcription']
         assert trans['status'] == 'complete'
         assert trans['media_duration_seconds'] > 0
+        if 'verified_transcript_end_seconds' in review:
+            trans['raw_asr_end_seconds'] = trans['transcript_end_seconds']
+            trans['transcript_end_seconds'] = float(review['verified_transcript_end_seconds'])
         assert trans['transcript_end_seconds'] >= trans['media_duration_seconds'] - 8
+        assert trans['transcript_end_seconds'] <= trans['media_duration_seconds'] + 0.5, 'ASR extends beyond actual media; explicit tail review required'
         before = item['content']['text']; text = before; changes = []
         for old, new in review['corrections'].items():
             count = text.count(old)
             if count:
                 text = text.replace(old, new)
                 changes.append({'pattern':old,'replacement':new,'count':str(count)})
+        text = text.strip()
         item['content']['text'] = text
         item['content']['hash'] = content_hash(item['content']['title'], text)
         item['raw_payload']['a_share_term_review'] = review_a_share_terms(item['content']['title'], text, tuple(changes))

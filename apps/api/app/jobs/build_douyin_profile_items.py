@@ -170,6 +170,7 @@ def build_item(
         "analysis": None,
         "raw_payload": {
             "market": "cn",
+            "access_verification": "restricted" if review_only else "unknown",
             "retry_transcription": bool(work.get('retry_transcription')),
             "comments_collected": False,
             "profile_snapshot": True,

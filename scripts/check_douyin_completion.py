@@ -3,6 +3,9 @@ import argparse
 import json
 import sqlite3
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/api'))
+from app.services.douyin_access_policy import excluded
 
 SOURCES = {'douyin_jiujiujiucai', 'douyin_panyiyoudianshen'}
 PENDING = {'pending_retry', 'no_audio_title_only', 'no_speech_title_only', 'reviewed_truncated'}
@@ -16,6 +19,7 @@ def check(db_path, collection=None):
             attempts = {(sid, aid): (n, next_retry, error) for sid, aid, n, next_retry, error in
                         db.execute('SELECT source_id,external_id,attempts,next_retry,error FROM douyin_retry_attempts')}
         for sid, aid, raw in db.execute('SELECT source_id,external_id,raw_json FROM information_items WHERE source_id IN (?,?)', tuple(SOURCES)):
+            if excluded(sid, aid): continue
             doc = json.loads(raw); payload = doc.get('raw_payload') or {}
             trans = payload.get('transcription') or {}
             if trans.get('status') not in PENDING or payload.get('access_label') or payload.get('subscription_preview'):
@@ -30,6 +34,7 @@ def check(db_path, collection=None):
         if review_path:
             for line in Path(review_path).read_text().splitlines():
                 doc = json.loads(line); sid = doc['source']['id']; aid = doc['external']['id']
+                if excluded(sid, aid): continue
                 if sid not in SOURCES:
                     continue
                 row = db.execute('SELECT raw_json FROM information_items WHERE source_id=? AND external_id=?',(sid,aid)).fetchone()

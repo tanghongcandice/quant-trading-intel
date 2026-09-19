@@ -57,14 +57,57 @@ def stage(run_id, name, attempt=1):
 
 
 def open_group(page):
+    # The chat shell is rendered before the conversation list.  Do not make a
+    # one-shot count() decision here: the selected heading commonly appears as
+    # "<group>(500)" a moment after the bare list entry would have been tested.
+    page.wait_for_function(
+        """group => Array.from(document.querySelectorAll('body *')).some(node => {
+          const text = String(node.textContent || '').trim();
+          return text === group || new RegExp('^' + group + '[（(]\\\\d+[)）]$').test(text);
+        })""",
+        arg=GROUP,
+        timeout=30000,
+    )
     heading = page.get_by_text(re.compile(r'^宇菠萝的认知圈1群[（(]\d+[)）]$'))
-    if not heading.count():
+    selected = any(heading.nth(i).is_visible() for i in range(heading.count()))
+    if not selected:
         entry = page.get_by_text(GROUP, exact=True)
-        if entry.count() != 1:
+        visible = [entry.nth(i) for i in range(entry.count()) if entry.nth(i).is_visible()]
+        if len(visible) != 1:
             raise RuntimeError('Target group unavailable; login or group selection required')
-        entry.click(timeout=5000)
+        visible[0].click(timeout=5000)
     page.locator('.messageMessageListlist').wait_for(state='visible', timeout=15000)
-    return page.evaluate(observation_script())
+    page.locator('.messageMessageListlist .messageMessageBoxmessageBox').first.wait_for(state='attached', timeout=15000)
+    return settled_observation(page)
+
+
+def save_failure_evidence(page, folder, attempt):
+    """Keep enough rendered-page evidence to distinguish login/load/selection failures."""
+    evidence = {'attempt': attempt, 'url': page.url, 'title': page.title(),
+                'captured_at': datetime.now(timezone.utc).isoformat()}
+    (folder/f'group_page_failure_{attempt}.json').write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2))
+    page.screenshot(path=str(folder/f'group_page_failure_{attempt}.png'), full_page=True)
+
+
+def settled_observation(page, max_observations=16):
+    """Let initial history hydration settle before committing identity evidence.
+
+    Douyin temporarily puts a sender/time header on the oldest loaded voice.
+    When older rows arrive that header disappears. Never commit that transient
+    boundary or weaken checkpoint alignment to accept its later disappearance.
+    """
+    previous = None
+    stable = 0
+    for _ in range(max_observations):
+        observed = page.evaluate(observation_script())
+        current = (observed['messages'], observed['at_latest'])
+        stable = stable + 1 if current == previous else 0
+        if observed['messages'] and stable >= 3:
+            return observed
+        previous = current
+        page.wait_for_timeout(750)
+    raise RuntimeError('Group initial DOM did not settle; retain session for retry')
 
 
 def neighbors(rows, index):
@@ -217,6 +260,18 @@ class Collector:
         self.page.wait_for_timeout(600)
         self.save()
 
+    def recheck_latest(self):
+        """Revisit the live end even when older history is unavailable."""
+        for _ in range(100):
+            self.save()
+            if self.window['at_latest']:
+                self.page.wait_for_timeout(600)
+                return self.save()
+            if time.monotonic() >= self.deadline:
+                raise RuntimeError('Time budget prevents latest-end recheck')
+            self.scroll(False)
+        raise RuntimeError('Latest-end recheck step budget reached')
+
     def run(self):
         self.save()
         unchanged = 0
@@ -279,11 +334,25 @@ def collect(args):
                     break
                 except Exception as exc:
                     errors.append(str(exc))
+                    try:
+                        save_failure_evidence(page, folder, attempt)
+                    except Exception as evidence_error:
+                        errors.append('Failure evidence unavailable: '+str(evidence_error))
                     # Only reconnect before any actual window capture. Never
                     # repeat the full processing budget after partial progress.
-                    if (folder/'group_checkpoint.json').exists() or attempt==3:
+                    if (folder/'group_checkpoint.json').exists():
+                        try:
+                            worker.recheck_latest()
+                        except Exception as recheck_error:
+                            errors.append(str(recheck_error))
+                        break
+                    if attempt==3:
                         break
                     page.wait_for_timeout(3000 if attempt==1 else 10000)
+                    if attempt == 2:
+                        # A fresh tab avoids repeating a bad restored tab while
+                        # keeping the same authorized persistent profile.
+                        page = context.new_page()
         finally:
             context.close()
     try:
@@ -297,6 +366,32 @@ def collect(args):
     result={'run_id':args.run_id,'status':status,'errors':errors,'receipt':receipt,'validation':validation}
     (folder/'group_collector_result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
     return result
+
+
+def activate(result, allow_partial=False):
+    receipt = result.get('receipt') or {}
+    if not (result.get('validation') or {}).get('ready'):
+        raise ValueError('Activation requires verified live evidence')
+    full = result['status']=='success' and receipt.get('status')=='ready'
+    if not full and not (allow_partial and receipt.get('status')=='partial_ready' and receipt.get('built_items',0)>0):
+        raise ValueError('Activation requires full coverage or explicit partial-mode authorization')
+    checkpoint_path = ROOT/'runs'/result['run_id']/'group_checkpoint.json'
+    evidence = json.loads(checkpoint_path.read_text())['collection_evidence']
+    if not evidence.get('latest_checked'):
+        raise ValueError('Activation requires a verified latest-end recheck')
+    marker = ROOT/'data/collection_state/douyin_group_script_enabled.json'
+    marker.parent.mkdir(parents=True,exist_ok=True)
+    state = {'run_id':result['run_id'], 'validated_at':datetime.now(timezone.utc).isoformat(),
+             'profile':str(PROFILE), 'mode':'full' if full else 'user_authorized_partial',
+             'coverage_complete':full}
+    if not full:
+        state['history_gap'] = {'status':'unresolved',
+            'frozen_final_cursor':evidence.get('final_db_cursor'),
+            'earliest_observed':evidence.get('earliest_checked'),
+            'errors':receipt.get('pending_errors',[]),
+            'reason':'User confirmed recent-only history after login; authorized ongoing capture without closing the gap'}
+    marker.write_text(json.dumps(state,ensure_ascii=False,indent=2))
+    return state
 
 
 def login(args):
@@ -330,7 +425,9 @@ def main():
     parser.add_argument('--wait-seconds',type=int,default=600)
     parser.add_argument('--max-steps',type=int,default=600)
     parser.add_argument('--max-seconds',type=int,default=1200)
-    parser.add_argument('--activate',action='store_true',help='Enable daily entry only after a fully verified live capture')
+    activation = parser.add_mutually_exclusive_group()
+    activation.add_argument('--activate',action='store_true',help='Enable daily entry only after a fully verified live capture')
+    activation.add_argument('--activate-partial',action='store_true',help='User-authorized ongoing capture with verified partial receipt; retain unresolved history and frozen cursor')
     args=parser.parse_args()
     if args.command=='collect' and (not args.run_id or not re.fullmatch('[A-Za-z0-9_-]+',args.run_id)):
         parser.error('Valid --run-id required')
@@ -343,10 +440,8 @@ def main():
             with lock(ROOT/'data/daily_collection.lock'):
                 result=collect(args)
         print(json.dumps(result,ensure_ascii=False))
-        if args.activate and result['status']=='success':
-            marker=ROOT/'data/collection_state/douyin_group_script_enabled.json'
-            marker.parent.mkdir(parents=True,exist_ok=True)
-            marker.write_text(json.dumps({'run_id':args.run_id,'validated_at':datetime.now(timezone.utc).isoformat(),'profile':str(PROFILE)}))
+        if args.activate or args.activate_partial:
+            print(json.dumps({'activation':activate(result,allow_partial=args.activate_partial)},ensure_ascii=False))
         raise SystemExit(0 if result['status']=='success' else 2)
 
 if __name__=='__main__':

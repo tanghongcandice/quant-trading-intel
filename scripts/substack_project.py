@@ -56,15 +56,49 @@ def effective_after(source_id: str | None, configured: str | None) -> datetime |
     return max(valid) if valid else None
 
 
+def page_json_request(page, endpoint: str, *, attempts: int = 3, retry_delay: float = 1.5):
+    """Fetch JSON through the loaded page so browser routing and auth are reused."""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = page.evaluate(
+                """async (url) => {
+                    const response = await fetch(url, {
+                        credentials: "include",
+                        headers: {Accept: "application/json"},
+                        cache: "no-store",
+                    });
+                    const body = await response.text();
+                    return {ok: response.ok, status: response.status, body};
+                }""",
+                endpoint,
+            )
+            if not isinstance(result, dict):
+                raise RuntimeError("browser page request returned an invalid result")
+            if not result.get("ok"):
+                raise RuntimeError(
+                    f"browser page request failed: HTTP {result.get('status', 'unknown')}"
+                )
+            try:
+                return json.loads(str(result.get("body") or ""))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("browser page request returned invalid JSON") from exc
+        except Exception as exc:  # Playwright errors differ across installed versions.
+            last_error = exc
+            if attempt < attempts:
+                page.wait_for_timeout(int(retry_delay * 1000))
+                continue
+    raise RuntimeError(
+        f"browser page request failed after {attempts} attempts: {last_error}"
+    ) from last_error
+
+
 def archive_posts(page, publication: str, after: datetime | None, before: datetime | None) -> list[dict]:
     posts: list[dict] = []
     offset = 0
     while True:
-        endpoint = f"{publication.rstrip('/')}/api/v1/archive?sort=new&search=&offset={offset}&limit=12"
-        response = page.request.get(endpoint, headers={"Accept": "application/json"})
-        if not response.ok:
-            raise RuntimeError(f"Substack archive request failed: HTTP {response.status}")
-        batch = response.json()
+        endpoint = f"/api/v1/archive?sort=new&search=&offset={offset}&limit=12"
+        batch = page_json_request(page, endpoint)
         if not isinstance(batch, list) or not batch:
             break
         posts.extend(batch)

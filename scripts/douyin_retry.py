@@ -1,6 +1,10 @@
 """Final-store-driven retries shared by both public Douyin profiles."""
 import json
 import sqlite3
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'apps/api'))
+from app.services.douyin_access_policy import excluded
 from datetime import datetime, timedelta, timezone
 
 STATUSES = {'no_audio_title_only', 'no_speech_title_only', 'reviewed_truncated', 'pending_retry'}
@@ -20,6 +24,8 @@ def retry_works(root, source_id, cfg, limit=3, force=False):
     result=[]; now=datetime.now(timezone.utc).isoformat()
     for raw, attempts, next_retry in rows:
         doc=json.loads(raw); p=doc.get('raw_payload') or {}; t=p.get('transcription') or {}
+        if excluded(source_id, doc['external']['id']):
+            continue
         if t.get('status') not in STATUSES or p.get('access_label') or p.get('subscription_preview'):
             continue
         ownership=p.get('ownership') or {}

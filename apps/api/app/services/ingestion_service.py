@@ -79,6 +79,9 @@ def entity_records(item: dict[str, Any]) -> list[tuple]:
 
 def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mode: str = "manual_import") -> dict[str, Any]:
     items = read_jsonl(jsonl_path)
+    from app.services.douyin_access_policy import excluded
+    blocked = [item for item in items if excluded((item.get('source') or {}).get('id'), (item.get('external') or {}).get('id'))]
+    items = [item for item in items if item not in blocked]
     for item in items:
         if (item.get('source') or {}).get('id') == 'douyin_group_yuboluo_1':
             payload = item.get('raw_payload') or {}
@@ -274,6 +277,7 @@ def import_jsonl(db_path: Path, jsonl_path: Path, run_id: str | None = None, mod
             "inserted_items": retained,
             "discord_guard": guard_stats,
             "skipped_duplicates": skipped,
+            "excluded_subscription_duplicates": len(blocked),
             "inserted_entities": entity_count,
             "updated_items": updated,
         }

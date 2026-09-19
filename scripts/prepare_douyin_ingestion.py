@@ -13,6 +13,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from douyin_retry import retry_works, record_attempt
+from app.services.douyin_access_policy import excluded
 
 
 PROFILES = {
@@ -127,6 +128,8 @@ def _candidate_works(source_id: str, cfg: dict, payload: dict, cutoff: datetime 
     """
     works: list[dict] = []
     for work in payload["works"]:
+        if excluded(source_id, work.get('aweme_id')):
+            continue
         if source_id == "douyin_panyiyoudianshen" and not (
             work.get("ownership_verified") and work.get("profile_url") == cfg["profile_url"]
         ):

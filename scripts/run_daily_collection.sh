@@ -31,7 +31,8 @@ collection_json="/tmp/quant_intel_daily_collection_${RUN_ID}.json"
 collection_failed=0
 collection_held=0
 
-# Activate only after the dedicated profile completes live coverage validation.
+# Activate after verified full capture or explicitly authorized partial capture.
+# Partial receipts retain the historical gap and freeze the complete cursor.
 # Preserve any same-run manual checkpoint instead of running two collectors.
 if [[ -f "$ROOT/data/collection_state/douyin_group_script_enabled.json" && ! -f "$ROOT/runs/$RUN_ID/group_checkpoint.json" ]]; then
   log "Collecting group through dedicated Playwright profile"
@@ -86,7 +87,7 @@ fi
 # source; never stop X/Discord/Substack just because browser access failed.
 if [[ -f "$ROOT/runs/$RUN_ID/group_checkpoint.json" ]]; then
   "$PYTHON_BIN" "$ROOT/scripts/prepare_douyin_group_run.py" --root "$ROOT" --run-id "$RUN_ID" || true
-  "$PYTHON_BIN" "$ROOT/scripts/chrome_preflight_diagnostics.py" validate --root "$ROOT" --run-id "$RUN_ID" || true
+  "$PYTHON_BIN" "$ROOT/scripts/chrome_preflight_diagnostics.py" --root "$ROOT" validate --run-id "$RUN_ID" || true
 fi
 
 cd "$API_DIR"

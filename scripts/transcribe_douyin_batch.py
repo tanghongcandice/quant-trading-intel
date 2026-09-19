@@ -77,6 +77,10 @@ def speech_source(metadata_path: Path, metadata: dict[str, Any], prepared_dir: P
     aweme_id = str(metadata.get("aweme_id") or "")
     if not aweme_id:
         raise ValueError(f"missing aweme_id in {metadata_path}")
+    if media_root and metadata.get('capture_method') == 'authorized_browser_rendered_video':
+        observed_audio = media_root / aweme_id / 'browser_playback.m4a'
+        if observed_audio.exists() and observed_audio.stat().st_size > 1024:
+            return observed_audio
     playback_audio = download_playback_audio(metadata, prepared_dir / f"{aweme_id}_speech_audio.m4a", stop_on_http_error)
     if playback_audio:
         return playback_audio
@@ -162,7 +166,12 @@ def main() -> None:
             continue
         print(f"[{index}/{len(jobs)}] transcribe {aweme_id}: {source.name}", flush=True)
         try:
-            result = transcribe(pcm_audio(source), path_or_hf_repo=MODEL, language="zh", verbose=False,
+            samples = pcm_audio(source)
+            if metadata.get('capture_method') == 'authorized_browser_rendered_video':
+                expected_seconds = float(metadata.get('duration') or 0) / 1000
+                if expected_seconds <= 0 or abs(len(samples)/16000 - expected_seconds) > 3:
+                    raise ValueError('Playback audio duration differs from observed video; reject incomplete/wrong track')
+            result = transcribe(samples, path_or_hf_repo=MODEL, language="zh", verbose=False,
                 condition_on_previous_text=True, initial_prompt=INITIAL_PROMPT_TEMPLATE.format(author_name=args.author_name))
         except Exception as exc:
             print(f"[{index}/{len(jobs)}] ASR failed {aweme_id}: {type(exc).__name__}", flush=True)
