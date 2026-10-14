@@ -38,6 +38,13 @@ class GroupTests(unittest.TestCase):
         self.assertEqual(len(build(self.payload)),1)
         self.payload['messages'][1].update(message_kind='system_notice',text='群公告已更新')
         self.assertEqual(len(build(self.payload)),1)
+
+    def test_recalled_message_notice_excluded_even_with_inherited_role(self):
+        self.payload['messages']=[self.payload['messages'][0],{
+            'index':0,'author':'管理员甲','role':'管理员','text':'"管理员甲" 撤回了一条消息'}]
+        rows=build(self.payload)
+        self.assertEqual(len(rows),1)
+        self.assertNotIn('撤回了一条消息', rows[0]['content']['text'])
     def test_new_message_does_not_change_old_ids(self):
         old=build(self.payload)
         for row in self.payload['messages']:row['index']+=1

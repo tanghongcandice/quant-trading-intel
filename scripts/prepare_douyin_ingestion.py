@@ -12,7 +12,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from douyin_retry import retry_works, record_attempt
+from douyin_retry import retry_works, record_attempt, remaining_budget
 from app.services.douyin_access_policy import excluded
 
 
@@ -191,7 +191,13 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False, retry_li
         str(work.get("aweme_id"))
         for work in works
         if work.get("aweme_id") and (str(work.get("aweme_id")) not in known_ids or str(work.get("aweme_id")) in retry_ids) and not work.get("review_only")
+        and work.get("ownership_verified") and work.get("profile_url") == cfg["profile_url"]
     )
+    # New works and historical retries share one source budget.
+    enrichment_ids = list(dict.fromkeys(
+        [w['aweme_id'] for w in retries if w['aweme_id'] in enrichment_ids] + enrichment_ids
+    ))[:remaining_budget(root,source_id)]
+    retry_ids &= set(enrichment_ids)
     normalized = {"author": payload.get("author") or cfg["author_name"], "works": works}
     temp = root / "runs" / f".{source_id}.normalized.json"
     temp.parent.mkdir(parents=True, exist_ok=True)
@@ -209,6 +215,15 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False, retry_li
         log_dir = root / 'runs' / os.environ.get('QUANT_RUN_ID', 'douyin_prepare_latest')
         log_dir.mkdir(parents=True, exist_ok=True)
         retry_audio_dir = log_dir / 'retry_audio' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+        # Never let a known failed/truncated ASR file suppress another attempt.
+        # Preserve it for audit, then require a fresh result for retry IDs.
+        import shutil
+        for aid in retry_ids & set(enrichment_ids):
+            prior_asr = root / 'data' / 'whisper' / f'{aid}.json'
+            if prior_asr.exists():
+                backup = log_dir / 'asr_before' / f'{aid}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")}.json'
+                backup.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(prior_asr), str(backup))
         enrichment_result = subprocess.run([sys.executable, str(enrich), "--snapshot", str(temp),
                         "--metadata-root", str(root / "data" / "douyin_metadata"),
                         "--whisper-dir", str(root / "data" / "whisper"),
@@ -216,18 +231,38 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False, retry_li
                         "--author-name", cfg["author_name"], "--ids", *enrichment_ids], cwd=str(root),
                        env={**os.environ}, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         works = json.loads(temp.read_text())['works']
+        if enrichment_result.returncode:
+            for work in works:
+                if str(work.get('aweme_id')) in enrichment_ids:
+                    work.setdefault('transcription_error', f'downloader_process_failed exit={enrichment_result.returncode}')
         _apply_metadata_access_guard(root, works)
         allowed_ids = {str(w.get('aweme_id')) for w in works if not w.get('review_only')}
-        transcription_ids = [aid for aid in enrichment_ids if aid in allowed_ids]
-        # Never let a known failed/truncated ASR file suppress another attempt.
-        # Preserve it for audit, then require a fresh result for retry IDs.
-        import shutil
-        for aid in retry_ids & set(transcription_ids):
-            prior_asr = root / 'data' / 'whisper' / f'{aid}.json'
-            if prior_asr.exists():
-                backup = log_dir / 'asr_before' / f'{aid}_{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")}.json'
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(prior_asr), str(backup))
+        # Fall back before recording any failure/cooldown: API and playback are
+        # stages of a single attempt. Membership guards have already run above.
+        from capture_douyin_playback import capture
+        fallback_works = [w for w in works if str(w.get('aweme_id')) in enrichment_ids
+                          and str(w.get('aweme_id')) in allowed_ids and w.get('transcription_error')]
+        if fallback_works:
+            try:
+                results = capture(root, log_dir.name, [str(w['aweme_id']) for w in fallback_works],
+                                  allocated=(source_id, [w for w in works if str(w.get('aweme_id')) in enrichment_ids]),
+                                  record=False)
+            except Exception as exc:
+                # Browser/profile failures must not prevent the other sources.
+                results = [{'id':str(w['aweme_id']), 'status':'pending_retry',
+                            'error':'playback_unavailable:' + type(exc).__name__} for w in fallback_works]
+            by_id = {r['id']:r for r in results}
+            for w in fallback_works:
+                recovered = by_id[str(w['aweme_id'])]
+                if recovered['status'] == 'awaiting_transcription':
+                    w.pop('transcription_error', None)
+                    w.pop('no_audio', None)
+                else:
+                    w['transcription_error'] = recovered['error']
+            normalized['works'] = works
+            temp.write_text(json.dumps(normalized,ensure_ascii=False),encoding='utf-8')
+        transcription_ids = [aid for aid in enrichment_ids if aid in allowed_ids
+                             and not next(w for w in works if str(w.get('aweme_id')) == aid).get('transcription_error')]
         transcribe = root / "scripts" / "transcribe_douyin_batch.py"
         transcription_result = subprocess.run([sys.executable, str(transcribe), "--metadata-root",
                         str(root / "data" / "douyin_metadata"), "--output-dir",
@@ -283,7 +318,7 @@ def prepare(root: Path, source_id: str, *, allow_missing: bool = False, retry_li
     built += reused_docs
     for doc in built:
         aid = doc['external']['id']
-        if aid in retry_ids:
+        if aid in enrichment_ids:
             trans = doc['raw_payload']['transcription']
             record_attempt(root, source_id, aid, 'awaiting_review' if trans['status']=='complete' else trans['status'], trans.get('error'))
     output_path.write_text(''.join(json.dumps(d,ensure_ascii=False)+'\n' for d in built),encoding='utf-8')

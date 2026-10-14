@@ -1,5 +1,6 @@
 """Final-store-driven retries shared by both public Douyin profiles."""
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -10,7 +11,21 @@ from datetime import datetime, timedelta, timezone
 STATUSES = {'no_audio_title_only', 'no_speech_title_only', 'reviewed_truncated', 'pending_retry'}
 
 
-def retry_works(root, source_id, cfg, limit=3, force=False):
+def remaining_budget(root, source_id, run_id=None):
+    run_id = run_id or os.environ.get('QUANT_RUN_ID')
+    if not run_id:
+        return 3
+    with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
+        db.execute('''CREATE TABLE IF NOT EXISTS douyin_retry_run_attempts(
+            run_id TEXT, source_id TEXT, external_id TEXT,
+            PRIMARY KEY(run_id,source_id,external_id))''')
+        used = db.execute('SELECT count(*) FROM douyin_retry_run_attempts WHERE run_id=? AND source_id=?',
+                          (run_id,source_id)).fetchone()[0]
+    return max(0,3-used)
+
+
+def retry_works(root, source_id, cfg, limit=3, force=False, run_id=None):
+    limit = min(limit, remaining_budget(root,source_id,run_id))
     if limit <= 0:
         return []
     with sqlite3.connect(root / 'data/quant_intel.sqlite') as db:
@@ -42,11 +57,17 @@ def retry_works(root, source_id, cfg, limit=3, force=False):
     return result
 
 
-def record_attempt(root, source_id, aid, status, error=None):
+def record_attempt(root, source_id, aid, status, error=None, run_id=None):
     now=datetime.now(timezone.utc)
+    run_id = run_id or os.environ.get('QUANT_RUN_ID')
+    remaining_budget(root,source_id,run_id)
     with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
+        increment = 1
+        if run_id:
+            increment = db.execute('INSERT OR IGNORE INTO douyin_retry_run_attempts VALUES(?,?,?)',
+                                   (run_id,source_id,aid)).rowcount
         db.execute('''INSERT INTO douyin_retry_attempts(source_id,external_id,attempts,last_attempt,next_retry,status,error)
             VALUES(?,?,1,?,?,?,?) ON CONFLICT(source_id,external_id) DO UPDATE SET
-            attempts=attempts+1,last_attempt=excluded.last_attempt,next_retry=excluded.next_retry,
+            attempts=attempts+?,last_attempt=excluded.last_attempt,next_retry=excluded.next_retry,
             status=excluded.status,error=excluded.error''',
-            (source_id,aid,now.isoformat(),(now+timedelta(hours=6)).isoformat(),status,error))
+            (source_id,aid,now.isoformat(),(now+timedelta(hours=6)).isoformat(),status,error,increment))

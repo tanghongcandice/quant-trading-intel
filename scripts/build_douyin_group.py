@@ -127,8 +127,9 @@ def build(payload, allow_partial=False):
             next_time = r.get('resolved_time') or resolve_time(r['time'], captured)
             if next_time != current_time: flush()
             current_time = next_time
-        if r.get('message_kind') == 'system_notice' or (not r.get('author') and (
-            '加入了群聊' in r.get('text', '') or r.get('text', '').strip() == '我发布了新作品，快来看看！')):
+        row_text = r.get('text', '').strip()
+        if r.get('message_kind') == 'system_notice' or '撤回了一条消息' in row_text or (not r.get('author') and (
+            '加入了群聊' in row_text or row_text == '我发布了新作品，快来看看！')):
             flush()
             current_author = current_speaker = current_role = current_topic = None
             continue

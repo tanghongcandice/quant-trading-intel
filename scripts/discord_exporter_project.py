@@ -56,6 +56,18 @@ def cursor_cutoff(source_id: str | None, configured_after: str | None) -> dateti
     return max(valid) if valid else None
 
 
+def read_reply_context(page, parent_id: str) -> tuple[str, str]:
+    # Scope to the original message; a quoted preview can duplicate its DOM IDs.
+    row = page.locator(f'[role="article"][data-list-item-id$="-{parent_id}"]').first
+    if not row.count():
+        return "", ""
+    content_node = row.locator(f"#message-content-{parent_id}").first
+    username_node = row.locator(f"#message-username-{parent_id}").first
+    content = content_node.inner_text(timeout=3_000).strip() if content_node.count() else ""
+    author = username_node.inner_text(timeout=3_000).strip() if username_node.count() else ""
+    return content, author
+
+
 def export_channel(args: argparse.Namespace) -> dict[str, Any]:
     cutoff = parse_datetime(args.after) if args.ignore_cursor else cursor_cutoff(args.source_id, args.after)
     url = f"https://discord.com/channels/{args.guild}/{args.channel}"
@@ -139,10 +151,7 @@ def export_channel(args: argparse.Namespace) -> dict[str, Any]:
                         timeout=60_000,
                     )
                     resolver.wait_for_timeout(1_500)
-                    content_node = resolver.locator(f"#message-content-{parent_id}")
-                    username_node = resolver.locator(f"#message-username-{parent_id}")
-                    content = content_node.inner_text(timeout=3_000).strip() if content_node.count() else ""
-                    author = username_node.inner_text(timeout=3_000).strip() if username_node.count() else ""
+                    content, author = read_reply_context(resolver, parent_id)
                     if content:
                         item["reference"]["unavailable"] = False
                         item["referencedMessage"] = {

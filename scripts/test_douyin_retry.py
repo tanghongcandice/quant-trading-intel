@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from douyin_retry import retry_works, record_attempt
+from douyin_retry import retry_works, record_attempt, remaining_budget
 from app.services.douyin_revision import update_profile_transcript
 from app.jobs.collect_premarket import _requires_codex_review
 
@@ -32,6 +32,23 @@ class RetryTests(unittest.TestCase):
                 with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
                     db.execute("UPDATE douyin_retry_attempts SET next_retry='2000-01-01'")
                 self.assertEqual(retry_works(root,sid,{'profile_url':'profile'}),[])
+
+    def test_one_run_counts_once_and_shares_source_quota(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); (root/'data').mkdir()
+            with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
+                db.execute('''CREATE TABLE douyin_retry_attempts(
+                    source_id TEXT, external_id TEXT, attempts INTEGER DEFAULT 0,
+                    last_attempt TEXT,next_retry TEXT,status TEXT,error TEXT,
+                    PRIMARY KEY(source_id,external_id))''')
+            for aid in ['1','2','3']:
+                record_attempt(root,'source',aid,'pending_retry','403',run_id='same_run')
+                record_attempt(root,'source',aid,'awaiting_review',run_id='same_run')
+            self.assertEqual(remaining_budget(root,'source','same_run'),0)
+            self.assertEqual(remaining_budget(root,'other','same_run'),3)
+            self.assertEqual(remaining_budget(root,'source','next_run'),3)
+            with sqlite3.connect(root/'data/quant_intel.sqlite') as db:
+                self.assertEqual(db.execute('SELECT sum(attempts) FROM douyin_retry_attempts').fetchone()[0],3)
 
     def test_review_gate_identity_audit_and_idempotence(self):
         db=sqlite3.connect(':memory:')

@@ -33,6 +33,9 @@ ARTICLES = {
     "JGy0-yE5xxWxKu-PVYtZ2Q": [(12, 18)],
     "kCyOpDLstXD0yNa9sBl1xg": [(27, 36)],
     "Dwi1ZXlNR4Nbjv_8rR3I5w": [(2, 6)],
+    "VrBqY7ODjpknAEVfmGCFgg": [(7, 17)],
+    "ri8U6ilogfWW8CJu6n4Jog": [(5, 17)],
+    "yhM5WZRNKDM4jHjdSE6lqg": [(18, 30)],
 }
 
 USER_AGENT = (

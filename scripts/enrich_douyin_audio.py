@@ -84,7 +84,12 @@ def main():
             if not existing_metadata.exists():
                 raise RuntimeError('metadata_missing http='+','.join(sorted(set(codes))))
             if mp4 is None:
-                # Valid separate playback audio does not require an MP4.
+                # A metadata-only "success" without a playback track must
+                # enter the browser fallback, rather than fail later in ASR.
+                metadata = json.loads(existing_metadata.read_text(encoding='utf-8'))
+                audio_tracks = (metadata.get('video') or {}).get('bit_rate_audio') or []
+                if not audio_tracks and not metadata.get('local_playback_audio'):
+                    raise RuntimeError('playback_media_missing http='+','.join(sorted(set(codes))))
                 downloaded += 1
                 continue
             audio=args.whisper_dir/'prepared_audio'/f'{aid}_speech_audio.m4a'; audio.parent.mkdir(parents=True,exist_ok=True)
